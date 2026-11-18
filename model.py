@@ -11,6 +11,7 @@ class Encoder(nnx.Module):
         self.conv2 = nnx.Conv(16, 32, kernel_size=(3, 3),padding="VALID", rngs=rngs)
         self.project = nnx.Conv(32, 8, kernel_size=(1, 1), rngs=rngs)
         self.linear = nnx.Linear(8 * 6 * 6, latent_dim, rngs=rngs)
+        self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
 
     def __call__(self, obs):
         x = jax.nn.elu(self.conv1(obs))
@@ -19,7 +20,7 @@ class Encoder(nnx.Module):
         x = x.reshape(*x.shape[:-3], -1)
         x = self.linear(x)
 
-        return x
+        return self.norm(x)
 
 
 class Decoder(nnx.Module):
