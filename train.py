@@ -44,7 +44,7 @@ def train(observations, seed=0, *, validation_observations=None):
         raise ValueError("Validation requires at least one observation")
 
     rngs = nnx.Rngs(seed)
-    model = nnx.Sequential(Encoder(rngs), Decoder(rngs))
+    model = nnx.Sequential(Encoder(rngs, 4, 64), Decoder(rngs, 4, 64))
     optimizer = nnx.Optimizer(model, optax.adam(LEARNING_RATE), wrt=nnx.Param)
     rng = np.random.default_rng(seed)
 

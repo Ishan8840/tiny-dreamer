@@ -6,14 +6,14 @@ import jax.numpy as jnp
 
 
 class Encoder(nnx.Module):
-    def __init__(self, rngs: nnx.Rngs):
-        self.conv1 = nnx.Conv(4, 32, kernel_size=(3, 3), rngs=rngs)
-        self.conv2 = nnx.Conv(32, 64, kernel_size=(3, 3), rngs=rngs)
-        self.linear = nnx.Linear(64 * 10 * 10, 128, rngs=rngs)
+    def __init__(self, rngs: nnx.Rngs, channels, latent_dim):
+        self.conv1 = nnx.Conv(channels, 16, kernel_size=(3, 3),padding="VALID", rngs=rngs)
+        self.conv2 = nnx.Conv(16, 32, kernel_size=(3, 3),padding="VALID", rngs=rngs)
+        self.linear = nnx.Linear(32 * 6 * 6, latent_dim, rngs=rngs)
 
     def __call__(self, obs):
-        x = jax.nn.relu(self.conv1(obs))
-        x = jax.nn.relu(self.conv2(x))
+        x = jax.nn.silu(self.conv1(obs))
+        x = jax.nn.silu(self.conv2(x))
         x = x.reshape(*x.shape[:-3], -1)
         x = self.linear(x)
 
@@ -21,16 +21,16 @@ class Encoder(nnx.Module):
 
 
 class Decoder(nnx.Module):
-    def __init__(self, rngs: nnx.Rngs):
-        self.linear = nnx.Linear(128, 64 * 10 * 10, rngs=rngs)
-        self.conv1 = nnx.Conv(64, 32, kernel_size=(3, 3), rngs=rngs)
-        self.conv2 = nnx.Conv(32, 4, kernel_size=(3, 3), rngs=rngs)
+    def __init__(self, rngs: nnx.Rngs, channels, latent_dim):
+        self.linear = nnx.Linear(latent_dim, 32 * 6 * 6, rngs=rngs)
+        self.conv1 = nnx.ConvTranspose(32, 16, kernel_size=(3, 3),padding="VALID", rngs=rngs)
+        self.conv2 = nnx.ConvTranspose(16, channels, kernel_size=(3, 3),padding="VALID", rngs=rngs)
 
     def __call__(self, obs):
-        x = jax.nn.relu(self.linear(obs))
-        x = x.reshape(*x.shape[:-1], 10, 10, 64)
+        x = jax.nn.silu(self.linear(obs))
+        x = x.reshape(*x.shape[:-1], 6, 6, 32)
 
-        x = jax.nn.relu(self.conv1(x))
+        x = jax.nn.silu(self.conv1(x))
         x = self.conv2(x)
 
         return x
@@ -41,5 +41,5 @@ def reconstruction_loss(logits, observations):
         logits,
         observations.astype(jnp.float32)
     )
-    
+
     return jnp.mean(loss)
