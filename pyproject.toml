@@ -4,4 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "flax>=0.12.8",
+    "gymnasium>=1.4.0",
+    "gymnax>=0.0.9",
+    "jax>=0.10.2",
+    "minatar>=1.0.15",
+    "optax>=0.2.9",
+]
