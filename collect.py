@@ -38,15 +38,3 @@ def collect_episode(env, env_params, key):
     }
 
     return episode, key
-
-
-env, env_params = make_env()
-buffer = ReplayBuffer(capacity=1000)
-
-key = jax.random.PRNGKey(0)
-
-for i in range(10):
-    episode, key = collect_episode(env, env_params, key)
-    buffer.add_episode(episode)
-
-print("Collected episodes:", len(buffer.episodes))
