@@ -13,7 +13,15 @@ class ReplayBuffer:
             self.episodes.pop(0)
 
     def sample_sequence(self, seq_len=16):
-        episode = self.episodes[np.random.randint(len(self.episodes))]
+        valid_episodes = [
+            ep for ep in self.episodes
+            if len(ep["actions"]) >= seq_len
+        ]
+
+        if not valid_episodes:
+            raise ValueError("No episodes long enough to sample")
+
+        episode = valid_episodes[np.random.randint(len(valid_episodes))]
 
         num_steps = len(episode["actions"])
         start = np.random.randint(0, num_steps - seq_len + 1)
