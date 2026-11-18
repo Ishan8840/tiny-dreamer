@@ -17,6 +17,19 @@ def batch_loss(model, observations):
     return reconstruction_loss(model(observations), observations)
 
 
+validation_step = nnx.jit(batch_loss)
+
+
+def split_episodes(episodes, seed=0):
+    if len(episodes) < 2:
+        raise ValueError("A train/validation split requires at least two episodes")
+    order = np.random.default_rng(seed).permutation(len(episodes))
+    val_count = max(1, round(0.1 * len(episodes)))
+    val_obs = np.concatenate([episodes[i]["observations"] for i in order[:val_count]])
+    train_obs = np.concatenate([episodes[i]["observations"] for i in order[val_count:]])
+    return train_obs, val_obs
+
+
 @nnx.jit
 def train_step(model, optimizer, batch):
     loss, grads = nnx.value_and_grad(batch_loss)(model, batch)
@@ -24,9 +37,11 @@ def train_step(model, optimizer, batch):
     return loss
 
 
-def train(observations, seed=0):
+def train(observations, seed=0, *, validation_observations=None):
     if len(observations) == 0:
         raise ValueError("Training requires at least one observation")
+    if validation_observations is not None and len(validation_observations) == 0:
+        raise ValueError("Validation requires at least one observation")
 
     rngs = nnx.Rngs(seed)
     model = nnx.Sequential(Encoder(rngs), Decoder(rngs))
@@ -41,12 +56,20 @@ def train(observations, seed=0):
             loss = train_step(model, optimizer, batch)
             total_loss += float(loss) * len(batch)
 
-        print(f"Epoch {epoch + 1}/{EPOCHS}  BCE {total_loss / len(indices):.5f}")
+        metrics = f"Epoch {epoch + 1}/{EPOCHS}  train BCE {total_loss / len(indices):.5f}"
+        if validation_observations is not None:
+            val_loss = 0.0
+            for start in range(0, len(validation_observations), BATCH_SIZE):
+                batch = validation_observations[start:start + BATCH_SIZE]
+                val_loss += float(validation_step(model, batch)) * len(batch)
+            metrics += f"  val BCE {val_loss / len(validation_observations):.5f}"
+        print(metrics)
     return model
 
 
 if __name__ == "__main__":
     env, params = make_env()
     key = jax.random.PRNGKey(0)
-    episodes, _ = collect_episodes(env, params, key, num_episodes=5000)
-    train(np.concatenate([episode["observations"] for episode in episodes]))
+    episodes, _ = collect_episodes(env, params, key, num_episodes=10000)
+    train_obs, val_obs = split_episodes(episodes)
+    train(train_obs, validation_observations=val_obs)
