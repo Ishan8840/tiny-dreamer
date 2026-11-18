@@ -3,11 +3,11 @@ name = "tiny-dreamer"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.15"
 dependencies = [
     "flax>=0.12.8",
-    "gymnasium>=1.4.0",
-    "gymnax>=0.0.9",
+    "gymnasium>=1.1,<1.4",
+    "gymnax==1.0.1",
     "jax>=0.10.2",
     "minatar>=1.0.15",
     "optax>=0.2.9",

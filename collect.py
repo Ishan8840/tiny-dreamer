@@ -25,6 +25,7 @@ def collect_episode(env, env_params, key, step_env):
         obs, state, reward, done, info = step_env(
             step_key, state, action, env_params
         )
+        done = done | env.is_truncated(state, env_params)
 
         observations.append(np.asarray(obs))
         actions.append(int(action))
@@ -47,6 +48,7 @@ def collect_batch_step(env, params, keys, states):
         key, action_key, step_key = jax.random.split(key, 3)
         action = env.action_space(params).sample(action_key)
         obs, next_state, reward, done, _ = env.step_env(step_key, state, action, params)
+        done = done | env.is_truncated(next_state, params)
         # Keep a valid input state for padding after this game's final transition.
         next_state = jax.tree.map(lambda old, new: jnp.where(done, old, new), state, next_state)
         return key, next_state, obs, action, reward, done

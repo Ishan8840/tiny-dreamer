@@ -11,6 +11,7 @@ from model import Decoder, Encoder, reconstruction_loss
 BATCH_SIZE = 64
 LEARNING_RATE = 3e-4
 EPOCHS = 20
+LATENT_DIM = 128
 
 
 def batch_loss(model, observations):
@@ -44,7 +45,8 @@ def train(observations, seed=0, *, validation_observations=None):
         raise ValueError("Validation requires at least one observation")
 
     rngs = nnx.Rngs(seed)
-    model = nnx.Sequential(Encoder(rngs, 4, 64), Decoder(rngs, 4, 64))
+    channels = observations.shape[-1]
+    model = nnx.Sequential(Encoder(rngs, channels, LATENT_DIM), Decoder(rngs, channels, LATENT_DIM))
     optimizer = nnx.Optimizer(model, optax.adam(LEARNING_RATE), wrt=nnx.Param)
     rng = np.random.default_rng(seed)
 
