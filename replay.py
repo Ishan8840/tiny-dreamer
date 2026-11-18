@@ -9,7 +9,7 @@ class ReplayBuffer:
     def add_episode(self, episode):
         self.episodes.append(episode)
 
-        if len(self.episodes > self.capacity):
+        if len(self.episodes) > self.capacity:
             self.episodes.pop(0)
 
     def sample_sequence(self, seq_len=16):

@@ -21,7 +21,7 @@ def collect_episode(env, env_params, key):
 
         action = env.action_space(env_params).sample(action_key)
 
-        obs, state, reward, done, info = env.step(
+        obs, state, reward, done, info = env.step_env(
             step_key, state, action, env_params
         )
 
