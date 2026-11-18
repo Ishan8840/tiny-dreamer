@@ -1,6 +1,8 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
+import optax
+import jax.numpy as jnp
 
 
 class Encoder(nnx.Module):
@@ -32,3 +34,12 @@ class Decoder(nnx.Module):
         x = self.conv2(x)
 
         return x
+
+
+def reconstruction_loss(logits, observations):
+    loss = optax.sigmoid_binary_cross_entropy(
+        logits,
+        observations.astype(jnp.float32)
+    )
+    
+    return jnp.mean(loss)
