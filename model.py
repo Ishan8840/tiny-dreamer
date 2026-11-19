@@ -63,15 +63,13 @@ class Decoder(nnx.Module):
         return x
 
 
-
-
-
 class RoPEAttention(nnx.Module):
-    def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4):
+    def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4, qknorm=True):
         if n_heads < 1 or d_model < 1 or d_model % (2 * n_heads):
             raise ValueError("RoPE requires an even head dimension and equally sized heads")
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
+        self.qk_scale = nnx.Param(jnp.array(self.head_dim ** 0.5, dtype=jnp.float32)) if qknorm else None
 
         self.q_proj = nnx.Linear(d_model, d_model, rngs=rngs)
         self.k_proj = nnx.Linear(d_model, d_model, rngs=rngs)
@@ -88,20 +86,27 @@ class RoPEAttention(nnx.Module):
         q = apply_rope(q)
         k = apply_rope(k)
 
-        out = jax.nn.dot_product_attention(q, k, v, is_causal=True)
+        scale = None
+        if self.qk_scale is not None:
+            q = q * jax.lax.rsqrt(jnp.maximum(jnp.sum(q * q, axis=-1, keepdims=True), 1e-12))
+            k = k * jax.lax.rsqrt(jnp.maximum(jnp.sum(k * k, axis=-1, keepdims=True), 1e-12))
+            q = q * self.qk_scale[...]
+            scale = 1.0
+        out = jax.nn.dot_product_attention(q, k, v, scale=scale, is_causal=True)
 
         out = out.reshape(B, T, self.n_heads * self.head_dim)
         return self.out_proj(out)
 
 
 class TransformerBlock(nnx.Module):
-    def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4):
+    def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4, qknorm=True):
         self.norm1 = nnx.RMSNorm(d_model, rngs=rngs)
 
         self.attn = RoPEAttention(
             rngs=rngs,
             d_model=d_model,
             n_heads=n_heads,
+            qknorm=qknorm,
         )
 
         self.norm2 = nnx.RMSNorm(d_model, rngs=rngs)
@@ -120,12 +125,12 @@ class TransformerBlock(nnx.Module):
 
 
 class DynamicsModel(nnx.Module):
-    def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim=128, d_model=128, n_heads=4):
+    def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim=128, d_model=128, n_heads=4, qknorm=True):
         self.latent_emb = nnx.Linear(latent_dim, d_model, rngs=rngs)
         self.action_emb = nnx.Embed(num_embeddings=action_dim, features=d_model, rngs=rngs)
         self.shortcut_emb = nnx.Linear(2, d_model, rngs=rngs)
 
-        self.blocks = nnx.List([TransformerBlock(rngs, d_model, n_heads) for _ in range(2)])
+        self.blocks = nnx.List([TransformerBlock(rngs, d_model, n_heads, qknorm) for _ in range(2)])
 
         self.out_proj = nnx.Linear(d_model, latent_dim, rngs=rngs)
 
