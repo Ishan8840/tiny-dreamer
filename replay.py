@@ -2,9 +2,10 @@ import numpy as np
 
 
 class ReplayBuffer:
-    def __init__(self, capacity=1000):
+    def __init__(self, capacity=1000, rng=None):
         self.capacity = capacity
         self.episodes = []
+        self.rng = rng
 
     def add_episode(self, episode):
         self.episodes.append(episode)
@@ -21,10 +22,14 @@ class ReplayBuffer:
         if not valid_episodes:
             raise ValueError("No episodes long enough to sample")
 
-        episode = valid_episodes[np.random.randint(len(valid_episodes))]
+        return self._sample_window(valid_episodes, seq_len)
+
+    def _sample_window(self, valid_episodes, seq_len):
+        randint = np.random.randint if self.rng is None else self.rng.integers
+        episode = valid_episodes[randint(len(valid_episodes))]
 
         num_steps = len(episode["actions"])
-        start = np.random.randint(0, num_steps - seq_len + 1)
+        start = randint(0, num_steps - seq_len + 1)
         end = start + seq_len
 
         return {
@@ -35,7 +40,10 @@ class ReplayBuffer:
         }
 
     def sample_batch(self, batch_size=32, seq_len=16):
-        sequences = [self.sample_sequence(seq_len) for _ in range(batch_size)]
+        eligible = [ep for ep in self.episodes if len(ep["actions"]) >= seq_len]
+        if not eligible:
+            raise ValueError("No episodes long enough to sample")
+        sequences = [self._sample_window(eligible, seq_len) for _ in range(batch_size)]
 
         return {
             key: np.stack([seq[key] for seq in sequences])

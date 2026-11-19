@@ -6,13 +6,14 @@ import jax.numpy as jnp
 
 from collect import collect_episodes
 from env import make_env
-from model import Decoder, Encoder, reconstruction_loss
+from model import Decoder, Encoder
 
 
 BATCH_SIZE = 64
 LEARNING_RATE = 3e-4
 EPOCHS = 20
 LATENT_DIM = 128
+D_MIN = 1 / 16
 
 
 def reconstruction_loss(logits, observations):
@@ -94,37 +95,54 @@ def dynamics_loss(
 validation_step = nnx.jit(batch_loss)
 
 
-def sample_noisy_latents(target_latent, rng):
+def sample_step_sizes(rng, batch_size):
+    levels = jax.random.randint(
+        rng,
+        shape=(batch_size,),
+        minval=0,
+        maxval=5,
+    )
+
+    step_size = D_MIN * (2.0 ** levels)
+
+    return step_size
+
+
+def sample_training_inputs(target_latent, rng):
     B = target_latent.shape[0]
 
-    noise_key, t_key = jax.random.split(rng)
+    step_key, time_key, noise_key = jax.random.split(rng, 3)
 
-    noise = jax.random.normal(
-        noise_key, target_latent.shape
-    )
+    # Sample shortcut step sizes
+    d = sample_step_sizes(step_key, B)
 
-    t = jax.random.uniform(
-        t_key,
-        shape=(B,),
-        minval=0.0,
-        maxval=1.0,
-    )
+    # Sample valid signal levels
+    u = jax.random.uniform(time_key, (B,))
+    t = u * (1.0 - d)
+
+    # Construct noisy latents
+    noise = jax.random.normal(noise_key, target_latent.shape)
 
     noisy_latent = (
         t[:, None] * target_latent
-        + (1 - t[:, None]) * noise
+        + (1.0 - t[:, None]) * noise
     )
 
-    return noisy_latent, t
+    return noisy_latent, t, d
 
 
-def split_episodes(episodes, seed=0):
+def episode_partitions(episodes, seed=0):
     if len(episodes) < 2:
         raise ValueError("A train/validation split requires at least two episodes")
     order = np.random.default_rng(seed).permutation(len(episodes))
     val_count = max(1, round(0.1 * len(episodes)))
-    val_obs = np.concatenate([episodes[i]["observations"] for i in order[:val_count]])
-    train_obs = np.concatenate([episodes[i]["observations"] for i in order[val_count:]])
+    return [episodes[i] for i in order[val_count:]], [episodes[i] for i in order[:val_count]]
+
+
+def split_episodes(episodes, seed=0):
+    train_eps, val_eps = episode_partitions(episodes, seed)
+    train_obs = np.concatenate([ep["observations"] for ep in train_eps])
+    val_obs = np.concatenate([ep["observations"] for ep in val_eps])
     return train_obs, val_obs
 
 

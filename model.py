@@ -1,8 +1,6 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
-import optax
-import jax.numpy as jnp
 
 
 def apply_rope(x):
@@ -70,6 +68,8 @@ class Decoder(nnx.Module):
 
 class RoPEAttention(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4):
+        if n_heads < 1 or d_model < 1 or d_model % (2 * n_heads):
+            raise ValueError("RoPE requires an even head dimension and equally sized heads")
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
 
@@ -88,11 +88,10 @@ class RoPEAttention(nnx.Module):
         q = apply_rope(q)
         k = apply_rope(k)
 
-        mask = jnp.tril(jnp.ones((T, T), dtype=bool))
-
-        out = jax.nn.dot_product_attention(q, k, v, mask=mask)
+        out = jax.nn.dot_product_attention(q, k, v, is_causal=True)
 
         out = out.reshape(B, T, self.n_heads * self.head_dim)
+        return self.out_proj(out)
 
 
 class TransformerBlock(nnx.Module):
@@ -100,6 +99,7 @@ class TransformerBlock(nnx.Module):
         self.norm1 = nnx.RMSNorm(d_model, rngs=rngs)
 
         self.attn = RoPEAttention(
+            rngs=rngs,
             d_model=d_model,
             n_heads=n_heads,
         )
@@ -109,8 +109,8 @@ class TransformerBlock(nnx.Module):
         self.fc1 = nnx.Linear(d_model, 4 * d_model, rngs=rngs)
         self.fc2 = nnx.Linear(4 * d_model, d_model, rngs=rngs)
 
-    def __call__(self, x, mask):
-        x = x + self.attn(self.norm1(x), mask=mask)
+    def __call__(self, x):
+        x = x + self.attn(self.norm1(x))
 
         h = self.fc1(self.norm2(x))
         h = jax.nn.silu(h)
@@ -120,12 +120,12 @@ class TransformerBlock(nnx.Module):
 
 
 class DynamicsModel(nnx.Module):
-    def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim=64, d_model=128, n_heads=4):
+    def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim=128, d_model=128, n_heads=4):
         self.latent_emb = nnx.Linear(latent_dim, d_model, rngs=rngs)
         self.action_emb = nnx.Embed(num_embeddings=action_dim, features=d_model, rngs=rngs)
         self.shortcut_emb = nnx.Linear(2, d_model, rngs=rngs)
 
-        self.blocks = [TransformerBlock(rngs, d_model, n_heads) for _ in range(2)]
+        self.blocks = nnx.List([TransformerBlock(rngs, d_model, n_heads) for _ in range(2)])
 
         self.out_proj = nnx.Linear(d_model, latent_dim, rngs=rngs)
 
