@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 from collect import collect_episodes
 from env import make_env
-from model import OUTCOME_COMPONENTS, WorldModel, denoise_next, make_tokenizer, restore_weights
+from model import Actor, Critic, OUTCOME_COMPONENTS, WorldModel, denoise_next, make_tokenizer, restore_weights
 from replay import ReplayBuffer
 
 
@@ -440,10 +440,123 @@ def train_dynamics(args, model, env, params, transform):
                 break
 
 
+def policy_state(history):
+    return jnp.concatenate((history[:, -2], history[:, -1]), axis=-1)
+
+
+def lambda_returns(rewards, discounts, next_values, trace_decay):
+    def backup(future, transition):
+        reward, discount, next_value = transition
+        target = reward + discount * ((1 - trace_decay) * next_value + trace_decay * future)
+        return target, target
+
+    _, targets = jax.lax.scan(backup, next_values[-1], (rewards, discounts, next_values), reverse=True)
+    return targets
+
+
+@nnx.jit(static_argnames=("horizon", "denoising_steps"))
+def actor_critic_update(agent, optimizer, dynamics, history, past_actions, key, horizon,
+                        denoising_steps, gamma, trace_decay, entropy_scale):
+    def imagine(carry, step_key):
+        history, past_actions = carry
+        action_key, noise_key = jax.random.split(step_key)
+        state = policy_state(history)
+        action = jax.random.categorical(action_key, agent.actor(state)).astype(past_actions.dtype)
+        actions = jnp.concatenate((past_actions, action[:, None]), axis=1)
+        reward, terminal = dynamics.predict_outcomes(history, actions)
+        noise = jax.random.normal(noise_key, history[:, -1].shape)
+        next_z = denoise_next(dynamics, history, actions, noise, denoising_steps)
+        next_history = jnp.concatenate((history[:, 1:], next_z[:, None]), axis=1)
+        transition = (state, action, jax.nn.sigmoid(reward), gamma * jax.nn.sigmoid(-terminal))
+        return (next_history, actions[:, 1:]), transition
+
+    (last_history, _), (states, actions, rewards, discounts) = jax.lax.scan(
+        imagine, (history, past_actions), jax.random.split(key, horizon))
+    bootstrap_states = jnp.concatenate((states[1:], policy_state(last_history)[None]), axis=0)
+    next_values = agent.critic(bootstrap_states)[..., 0]
+    targets = jax.lax.stop_gradient(lambda_returns(rewards, discounts, next_values, trace_decay))
+    weights = jnp.cumprod(jnp.concatenate((jnp.ones_like(discounts[:1]), discounts[:-1])), axis=0)
+
+    def loss_fn(net):
+        values = net.critic(states)[..., 0]
+        advantage = jax.lax.stop_gradient(targets - values)
+        log_probs = jax.nn.log_softmax(net.actor(states))
+        chosen = jnp.take_along_axis(log_probs, actions[..., None], axis=-1)[..., 0]
+        entropy = -(jnp.exp(log_probs) * log_probs).sum(axis=-1)
+        actor_loss = -(weights * (chosen * advantage + entropy_scale * entropy)).sum() / weights.sum()
+        critic_loss = (weights * jnp.square(targets - values)).sum() / weights.sum()
+        return actor_loss + critic_loss, (actor_loss, critic_loss)
+
+    (_, losses), grads = nnx.value_and_grad(loss_fn, has_aux=True)(agent)
+    optimizer.update(agent, grads)
+    return losses
+
+
+@nnx.jit(static_argnames=("env", "episodes"))
+def policy_returns(actor, encoder, env, params, key, episodes):
+    reset_key, rollout_key = jax.random.split(key)
+    obs, env_states = jax.vmap(env.reset, in_axes=(0, None))(jax.random.split(reset_key, episodes), params)
+    latent = encoder(obs.astype(jnp.float32))
+
+    def advance(carry):
+        key, env_states, previous, current, active, returns = carry
+        key, action_key, step_key = jax.random.split(key, 3)
+        actions = jax.random.categorical(action_key, actor(jnp.concatenate((previous, current), axis=-1)))
+        obs, next_states, reward, done, _ = jax.vmap(env.step_env, in_axes=(0, 0, 0, None))(
+            jax.random.split(step_key, episodes), env_states, actions, params)
+        done |= jax.vmap(env.is_truncated, in_axes=(0, None))(next_states, params)
+        # Finished lanes keep their last valid state until the longest episode ends.
+        def keep_active(new, old):
+            mask = active.reshape((episodes,) + (1,) * (new.ndim - 1))
+            return jnp.where(mask, new, old)
+        next_states = jax.tree.map(keep_active, next_states, env_states)
+        return (key, next_states, current, encoder(obs.astype(jnp.float32)), active & ~done,
+                returns + jnp.where(active, reward, 0.0))
+
+    initial = (rollout_key, env_states, latent, latent, jnp.ones(episodes, bool), jnp.zeros(episodes))
+    return jax.lax.while_loop(lambda carry: carry[4].any(), advance, initial)[-1]
+
+
+def train_actor_critic(args, model, env, params, transform):
+    data_key, train_key, eval_key, init_key = jax.random.split(jax.random.key(args.seed), 4)
+    episodes, _ = collect_episodes(env, params, data_key, args.episodes)
+    replay = make_replay(episodes, args.context, args.seed)
+    encoder = model.tokenizer.layers[0]
+    cache_latents(encoder, replay)
+    input_dim = 2 * replay.episodes[0]["observations"].shape[-1]
+    rngs = nnx.Rngs(init_key)
+    agent = nnx.Dict(actor=Actor(rngs, env.action_space(params).n, input_dim),
+                     critic=Critic(rngs, input_dim))
+    optimizer = nnx.Optimizer(agent, transform, wrt=nnx.Param)
+    best = -np.inf
+    stale = 0
+    for epoch in range(args.epochs):
+        losses = []
+        for _ in range(args.steps_per_epoch):
+            batch = replay.sample_batch(args.batch_size, args.context)
+            train_key, key = jax.random.split(train_key)
+            losses.append(actor_critic_update(
+                agent, optimizer, model.dynamics, batch["observations"][:, :-1],
+                batch["actions"][:, :-1], key, args.imagination_horizon, args.denoising_steps,
+                args.discount, args.lambda_return, args.entropy_scale))
+        returns = policy_returns(agent.actor, encoder, env, params, eval_key, args.eval_episodes)
+        score = float(returns.mean())
+        actor_loss, critic_loss = np.mean(losses, axis=0)
+        print(f"Step {(epoch + 1) * args.steps_per_epoch}  actor loss {actor_loss:.5f}"
+              f"  critic MSE {critic_loss:.5f}  real mean return {score:.4f}", flush=True)
+        if score > best:
+            save_weights(agent, args.output)
+            best, stale = score, 0
+        else:
+            stale += 1
+            if args.patience and stale >= args.patience:
+                break
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train the tokenizer and QKNorm shortcut dynamics")
     parser.add_argument("--train", choices=("tokenizer", "dynamics", "both", "outcomes", "heads",
-                                            "dynamics-outcomes"), default="dynamics",
+                                            "dynamics-outcomes", "actor-critic"), default="dynamics",
                         help="Components to update (default: dynamics with a frozen tokenizer)")
     init = parser.add_mutually_exclusive_group()
     init.add_argument("--tokenizer-checkpoint", type=Path)
@@ -465,7 +578,21 @@ def main():
     dyn.add_argument("--patience", type=int, default=5, help="Validation checks without improvement (0 disables)")
     dyn.add_argument("--dynamics-weight", type=float, default=1.0)
     dyn.add_argument("--denoising-steps", type=int, choices=(1, 2, 4, 8, 16), default=DEFAULT_DENOISING_STEPS)
+    policy = parser.add_argument_group("offline actor-critic")
+    policy.add_argument("--imagination-horizon", type=int, default=5)
+    policy.add_argument("--discount", type=float, default=0.99)
+    policy.add_argument("--lambda-return", type=float, default=0.95)
+    policy.add_argument("--entropy-scale", type=float, default=0.001)
+    policy.add_argument("--eval-episodes", type=int, default=64)
     args = parser.parse_args()
+    if args.train == "actor-critic":
+        if not args.model_checkpoint:
+            parser.error("actor-critic requires --model-checkpoint with trained reward and terminal heads")
+        if args.context < 2 or min(args.imagination_horizon, args.eval_episodes) < 1:
+            parser.error("actor-critic requires context >= 2 and positive imagination horizon and eval episodes")
+        if not (0 <= args.discount <= 1 and 0 <= args.lambda_return <= 1
+                and np.isfinite(args.entropy_scale) and args.entropy_scale >= 0):
+            parser.error("discount and lambda-return must be in [0,1] and entropy-scale finite and nonnegative")
     tokenizer_only = args.train == "tokenizer"
     if args.episodes is None:
         args.episodes = 10000 if tokenizer_only else 1000
@@ -491,7 +618,7 @@ def main():
     else:
         model = WorldModel(nnx.Rngs(args.seed), channels, env.action_space(params).n)
         if args.model_checkpoint:
-            restore_weights(model, args.model_checkpoint)
+            restore_weights(model, args.model_checkpoint, require_outcomes=args.train == "actor-critic")
         tokenizer = model.tokenizer
     if args.tokenizer_checkpoint:
         restore_weights(tokenizer, args.tokenizer_checkpoint)
@@ -504,6 +631,8 @@ def main():
         observations, validation = split_episodes(episodes, args.seed)
         train(observations, args.seed, validation_observations=validation, model=tokenizer,
               epochs=args.epochs, batch_size=args.batch_size, output=args.output, transform=transform)
+    elif args.train == "actor-critic":
+        train_actor_critic(args, model, env, params, transform)
     else:
         train_dynamics(args, model, env, params, transform)
 

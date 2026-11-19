@@ -219,12 +219,12 @@ class WorldModel(nnx.Module):
 OUTCOME_COMPONENTS = ("agent_token", "reward_head", "terminal_head")
 
 
-def restore_weights(model, path):
+def restore_weights(model, path, *, require_outcomes=False):
     state = nnx.state(model, nnx.Param)
     template = nnx.to_pure_dict(state)
     saved = serialization.msgpack_restore(path.read_bytes())
     expected = serialization.to_state_dict(template)
-    if isinstance(model, WorldModel) and "dynamics" in saved:
+    if isinstance(model, WorldModel) and "dynamics" in saved and not require_outcomes:
         # Older world models predate the agent token and outcome heads.
         for name in OUTCOME_COMPONENTS:
             saved["dynamics"].setdefault(name, expected["dynamics"][name])
@@ -248,3 +248,31 @@ def denoise_next(dynamics, history, actions, noise, denoising_steps):
         return latent + (clean - latent) / (denoising_steps - index)
 
     return jax.lax.fori_loop(0, denoising_steps, advance, noise)
+
+
+class Actor(nnx.Module):
+    def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim):
+        self.f1 = nnx.Linear(latent_dim, 256, rngs=rngs)
+        self.f2 = nnx.Linear(256, 128, rngs=rngs)
+        self.f3 = nnx.Linear(128, action_dim, rngs=rngs)
+
+    def __call__(self, x):
+        x = jax.nn.silu(self.f1(x))
+        x = jax.nn.silu(self.f2(x))
+        x = self.f3(x)
+
+        return x
+
+
+class Critic(nnx.Module):
+    def __init__(self, rngs: nnx.Rngs, latent_dim):
+        self.f1 = nnx.Linear(latent_dim, 256, rngs=rngs)
+        self.f2 = nnx.Linear(256, 128, rngs=rngs)
+        self.f3 = nnx.Linear(128, 1, rngs=rngs)
+
+    def __call__(self, x):
+        x = jax.nn.silu(self.f1(x))
+        x = jax.nn.silu(self.f2(x))
+        x = self.f3(x)
+
+        return x
