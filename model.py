@@ -147,8 +147,8 @@ class TransformerBlock(nnx.Module):
         self.fc1 = nnx.Linear(d_model, 2 * hidden if swiglu else hidden, rngs=rngs)
         self.fc2 = nnx.Linear(hidden, d_model, rngs=rngs)
 
-    def __call__(self, x):
-        x = x + self.attn(self.norm1(x))
+    def __call__(self, x, mask=None):
+        x = x + self.attn(self.norm1(x), mask=mask,)
 
         h = self.fc1(self.norm2(x))
 
@@ -175,6 +175,8 @@ class DynamicsModel(nnx.Module):
                                 for _ in range(2)])
 
         self.out_proj = nnx.Linear(d_model, latent_dim, rngs=rngs)
+        self.reward_head = nnx.Linear(d_model, 1, rngs=rngs)
+        self.terminal_head = nnx.Linear(d_model, 1, rngs=rngs)
 
     def __call__(self, history_latents, history_actions, noisy_latent, noise_level, step_size):
         history_tokens = self.latent_emb(history_latents) + self.action_emb(history_actions)
@@ -185,33 +187,22 @@ class DynamicsModel(nnx.Module):
         future_token = self.latent_emb(noisy_latent)
         future_token = future_token[:, None, :]
 
-        B = history_tokens.shape[0]
+        x = jnp.concatenate([history_tokens, shortcut_token, future_token], axis=1)
+        for block in self.blocks:
+            x = block(x)
+        return self.out_proj(x[:, -1])
 
-        agent_token = jnp.broadcast_to(
-            self.agent_token.value,
-            (B, 1, self.d_model),
-        )
-
-        x = jnp.concatenate(
-            [history_tokens, shortcut_token, future_token, agent_token],
-            axis=1,
-        )
-
-        H = history_tokens.shape[1]
-        T = H + 3
-
-        mask = jnp.tril(jnp.ones((T, T), dtype=bool))
-        mask = mask.at[-1, H:H+2].set(False)
+    def predict_outcomes(self, history_latents, history_actions):
+        history = self.latent_emb(history_latents) + self.action_emb(history_actions)
+        batch, _, width = history.shape
+        agent_token = jnp.broadcast_to(self.agent_token[...], (batch, 1, width))
+        x = jnp.concatenate([history, agent_token], axis=1)
 
         for block in self.blocks:
-            x = block(x, mask=mask)
+            x = block(x)
 
-        future_hidden = x[:, -2, :]
-        agent_hidden = x[:, -1, :]
-
-        predicted_clean = self.out_proj(future_hidden)
-
-        return predicted_clean
+        features = x[:, -1]
+        return self.reward_head(features)[:, 0], self.terminal_head(features)[:, 0]
 
 
 def make_tokenizer(rngs, channels, latent_dim=128):
@@ -225,13 +216,26 @@ class WorldModel(nnx.Module):
                                       swiglu=swiglu, softcap=softcap)
 
 
+OUTCOME_COMPONENTS = ("agent_token", "reward_head", "terminal_head")
+
+
 def restore_weights(model, path):
     state = nnx.state(model, nnx.Param)
     template = nnx.to_pure_dict(state)
-    restored = serialization.from_bytes(template, path.read_bytes())
+    saved = serialization.msgpack_restore(path.read_bytes())
+    expected = serialization.to_state_dict(template)
+    if isinstance(model, WorldModel) and "dynamics" in saved:
+        # Older world models predate the agent token and outcome heads.
+        for name in OUTCOME_COMPONENTS:
+            saved["dynamics"].setdefault(name, expected["dynamics"][name])
+    if jax.tree.structure(saved) != jax.tree.structure(expected):
+        raise ValueError(f"Incompatible checkpoint parameter keys: {path}")
+    restored = serialization.from_state_dict(template, saved)
+
     for expected, actual in zip(jax.tree.leaves(template), jax.tree.leaves(restored), strict=True):
         if actual.shape != expected.shape:
             raise ValueError(f"Incompatible checkpoint: {actual.shape} vs {expected.shape}")
+
     nnx.replace_by_pure_dict(state, jax.tree.map(jnp.asarray, restored))
     nnx.update(model, state)
 

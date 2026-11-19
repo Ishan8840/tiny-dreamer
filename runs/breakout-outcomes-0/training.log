@@ -1,0 +1,93 @@
+Step 2000 train BCE 0.175230 val BCE 0.308288 (152 windows)
+  reward BCE 0.107453  precision 0.500  recall 0.300  positives 10  predicted 6
+  terminal BCE 0.200835  precision 0.761  recall 0.921  positives 38  predicted 46
+Step 4000 train BCE 0.070131 val BCE 0.233344 (152 windows)
+  reward BCE 0.079884  precision 0.615  recall 0.800  positives 10  predicted 13
+  terminal BCE 0.153460  precision 0.895  recall 0.895  positives 38  predicted 38
+Step 6000 train BCE 0.046170 val BCE 0.183883 (152 windows)
+  reward BCE 0.060541  precision 1.000  recall 0.800  positives 10  predicted 8
+  terminal BCE 0.123342  precision 0.902  recall 0.974  positives 38  predicted 41
+Step 8000 train BCE 0.036053 val BCE 0.166765 (152 windows)
+  reward BCE 0.045702  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.121063  precision 0.925  recall 0.974  positives 38  predicted 40
+Step 10000 train BCE 0.030977 val BCE 0.151491 (152 windows)
+  reward BCE 0.036381  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.115109  precision 0.923  recall 0.947  positives 38  predicted 39
+Step 12000 train BCE 0.024840 val BCE 0.138923 (152 windows)
+  reward BCE 0.031834  precision 0.900  recall 0.900  positives 10  predicted 10
+  terminal BCE 0.107090  precision 0.902  recall 0.974  positives 38  predicted 41
+Step 14000 train BCE 0.022325 val BCE 0.128106 (152 windows)
+  reward BCE 0.035387  precision 0.818  recall 0.900  positives 10  predicted 11
+  terminal BCE 0.092719  precision 0.921  recall 0.921  positives 38  predicted 38
+Step 16000 train BCE 0.017128 val BCE 0.101771 (152 windows)
+  reward BCE 0.037436  precision 0.900  recall 0.900  positives 10  predicted 10
+  terminal BCE 0.064335  precision 0.902  recall 0.974  positives 38  predicted 41
+Step 18000 train BCE 0.013246 val BCE 0.100586 (152 windows)
+  reward BCE 0.027725  precision 0.900  recall 0.900  positives 10  predicted 10
+  terminal BCE 0.072861  precision 0.925  recall 0.974  positives 38  predicted 40
+Step 20000 train BCE 0.010553 val BCE 0.071004 (152 windows)
+  reward BCE 0.028164  precision 0.900  recall 0.900  positives 10  predicted 10
+  terminal BCE 0.042840  precision 0.950  recall 1.000  positives 38  predicted 40
+Step 22000 train BCE 0.008495 val BCE 0.080558 (152 windows)
+  reward BCE 0.023573  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.056985  precision 0.950  recall 1.000  positives 38  predicted 40
+Step 24000 train BCE 0.007343 val BCE 0.066432 (152 windows)
+  reward BCE 0.023975  precision 0.900  recall 0.900  positives 10  predicted 10
+  terminal BCE 0.042457  precision 0.950  recall 1.000  positives 38  predicted 40
+Step 26000 train BCE 0.006086 val BCE 0.083210 (152 windows)
+  reward BCE 0.019041  precision 0.900  recall 0.900  positives 10  predicted 10
+  terminal BCE 0.064168  precision 0.927  recall 1.000  positives 38  predicted 41
+Step 28000 train BCE 0.005259 val BCE 0.076017 (152 windows)
+  reward BCE 0.017608  precision 0.900  recall 0.900  positives 10  predicted 10
+  terminal BCE 0.058408  precision 0.949  recall 0.974  positives 38  predicted 39
+Step 30000 train BCE 0.004524 val BCE 0.066511 (152 windows)
+  reward BCE 0.016500  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.050011  precision 0.950  recall 1.000  positives 38  predicted 40
+Step 32000 train BCE 0.003709 val BCE 0.061994 (152 windows)
+  reward BCE 0.015483  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.046511  precision 0.950  recall 1.000  positives 38  predicted 40
+Step 34000 train BCE 0.003364 val BCE 0.058362 (152 windows)
+  reward BCE 0.014903  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.043458  precision 0.974  recall 1.000  positives 38  predicted 39
+Step 36000 train BCE 0.002891 val BCE 0.064859 (152 windows)
+  reward BCE 0.011727  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.053132  precision 0.950  recall 1.000  positives 38  predicted 40
+Step 38000 train BCE 0.002401 val BCE 0.055069 (152 windows)
+  reward BCE 0.010125  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.044943  precision 0.950  recall 1.000  positives 38  predicted 40
+Step 40000 train BCE 0.002170 val BCE 0.066941 (152 windows)
+  reward BCE 0.009350  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.057591  precision 0.927  recall 1.000  positives 38  predicted 41
+Step 42000 train BCE 0.001946 val BCE 0.060265 (152 windows)
+  reward BCE 0.008966  precision 1.000  recall 1.000  positives 10  predicted 10
+  terminal BCE 0.051299  precision 0.927  recall 1.000  positives 38  predicted 41
+Step 44000 train BCE 0.001633 val BCE 0.070650 (152 windows)
+  reward BCE 0.005732  precision 1.000  recall 1.000  positives 10  predicted 10
+  terminal BCE 0.064918  precision 0.927  recall 1.000  positives 38  predicted 41
+Step 46000 train BCE 0.001466 val BCE 0.054561 (152 windows)
+  reward BCE 0.007349  precision 1.000  recall 1.000  positives 10  predicted 10
+  terminal BCE 0.047212  precision 0.974  recall 1.000  positives 38  predicted 39
+Step 48000 train BCE 0.001267 val BCE 0.051742 (152 windows)
+  reward BCE 0.008335  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.043407  precision 0.974  recall 1.000  positives 38  predicted 39
+Step 50000 train BCE 0.001418 val BCE 0.071592 (152 windows)
+  reward BCE 0.007112  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.064480  precision 0.927  recall 1.000  positives 38  predicted 41
+Step 52000 train BCE 0.000995 val BCE 0.044944 (152 windows)
+  reward BCE 0.003941  precision 1.000  recall 1.000  positives 10  predicted 10
+  terminal BCE 0.041003  precision 0.927  recall 1.000  positives 38  predicted 41
+Step 54000 train BCE 0.001397 val BCE 0.058732 (152 windows)
+  reward BCE 0.006765  precision 1.000  recall 0.900  positives 10  predicted 9
+  terminal BCE 0.051967  precision 0.927  recall 1.000  positives 38  predicted 41
+Step 56000 train BCE 0.000758 val BCE 0.056004 (152 windows)
+  reward BCE 0.004341  precision 1.000  recall 1.000  positives 10  predicted 10
+  terminal BCE 0.051663  precision 0.927  recall 1.000  positives 38  predicted 41
+Step 58000 train BCE 0.000806 val BCE 0.055310 (152 windows)
+  reward BCE 0.004440  precision 1.000  recall 1.000  positives 10  predicted 10
+  terminal BCE 0.050869  precision 0.950  recall 1.000  positives 38  predicted 40
+Step 60000 train BCE 0.000898 val BCE 0.046327 (152 windows)
+  reward BCE 0.004279  precision 1.000  recall 1.000  positives 10  predicted 10
+  terminal BCE 0.042049  precision 0.974  recall 1.000  positives 38  predicted 39
+Step 62000 train BCE 0.000629 val BCE 0.053224 (152 windows)
+  reward BCE 0.003174  precision 1.000  recall 1.000  positives 10  predicted 10
+  terminal BCE 0.050051  precision 0.950  recall 1.000  positives 38  predicted 40

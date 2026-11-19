@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 from collect import collect_episodes
 from env import make_env
-from model import WorldModel, denoise_next, make_tokenizer, restore_weights
+from model import OUTCOME_COMPONENTS, WorldModel, denoise_next, make_tokenizer, restore_weights
 from replay import ReplayBuffer
 
 
@@ -267,26 +267,133 @@ def make_replay(episodes, context, seed):
     return buffer
 
 
+def cache_latents(encoder, replay):
+    observations = np.concatenate([ep["observations"] for ep in replay.episodes])
+    encoded = np.concatenate([np.asarray(encode_frames(encoder, observations[i:i + 512]))
+                              for i in range(0, len(observations), 512)])
+    offset = 0
+    for ep in replay.episodes:
+        end = offset + len(ep["observations"])
+        ep["observations"] = encoded[offset:end]
+        offset = end
+
+
+def is_outcome_param(path, variable):
+    return isinstance(variable, nnx.Param) and path[0] in OUTCOME_COMPONENTS
+
+
+def outcome_metrics(dynamics, history, actions, targets):
+    reward, terminal = dynamics.predict_outcomes(history, actions)
+    logits = jnp.stack((reward, terminal), axis=-1)
+    bce = optax.sigmoid_binary_cross_entropy(logits, targets).mean(axis=0)
+    predictions = logits >= 0
+    counts = jnp.stack(((predictions & targets).sum(axis=0), predictions.sum(axis=0),
+                        targets.sum(axis=0)))
+    return bce.sum(), (bce, counts)
+
+
+def is_head_param(path, variable):
+    return isinstance(variable, nnx.Param) and path[0] in ("reward_head", "terminal_head")
+
+
+@nnx.jit(static_argnames=("param_filter",))
+def outcome_update(dynamics, optimizer, history, actions, targets, param_filter=is_outcome_param):
+    (loss, _), grads = nnx.value_and_grad(
+        outcome_metrics, argnums=nnx.DiffState(0, param_filter), has_aux=True
+    )(dynamics, history, actions, targets)
+    optimizer.update(dynamics, grads)
+    return loss
+
+
+evaluate_outcomes = nnx.jit(outcome_metrics)
+
+
+@nnx.jit
+def dynamics_outcome_update(dynamics, optimizer, latents, actions, targets, key, weight):
+    def objective(net):
+        event_loss, _ = outcome_metrics(net, latents[:, :-1], actions, targets)
+        shortcut = shortcut_loss(net, latents, actions, key)
+        return event_loss + weight * shortcut, event_loss
+
+    (_, event_loss), grads = nnx.value_and_grad(objective, has_aux=True)(dynamics)
+    optimizer.update(dynamics, grads)
+    return event_loss
+
+
+def outcome_validation(dynamics, episodes, context, batch_size):
+    # Score each eligible transition exactly once, including the last action.
+    losses = np.zeros(2)
+    counts = np.zeros((3, 2), dtype=np.int64)
+    windows = [(ep, start) for ep in episodes for start in range(len(ep["actions"]) - context + 1)]
+    for offset in range(0, len(windows), batch_size):
+        group = windows[offset:offset + batch_size]
+        history = np.stack([ep["observations"][s:s + context] for ep, s in group])
+        actions = np.stack([ep["actions"][s:s + context] for ep, s in group])
+        targets = np.array([(ep["rewards"][s + context - 1] > 0, ep["terminals"][s + context - 1])
+                            for ep, s in group], dtype=bool)
+        _, (bce, batch_counts) = evaluate_outcomes(dynamics, history, actions, targets)
+        losses += np.asarray(bce) * len(group)
+        counts += np.asarray(batch_counts)
+    return losses / len(windows), counts, len(windows)
+
+
+def train_outcomes(args, model, transform, replay, val, train_key):
+    dynamics = model.dynamics
+    joint = args.train == "dynamics-outcomes"
+    param_filter = is_head_param if args.train == "heads" else is_outcome_param
+    optimizer = nnx.Optimizer(dynamics, transform, wrt=nnx.Param if joint else param_filter)
+    best = float("inf")
+    stale = 0
+    for epoch in range(args.epochs):
+        train_losses = []
+        for _ in range(args.steps_per_epoch):
+            batch = replay.sample_batch(args.batch_size, args.context)
+            targets = np.stack((batch["rewards"][:, -1] > 0, batch["terminals"][:, -1]), axis=-1)
+            if joint:
+                train_key, key = jax.random.split(train_key)
+                loss = dynamics_outcome_update(dynamics, optimizer, batch["observations"],
+                                               batch["actions"], targets, key, args.dynamics_weight)
+            else:
+                loss = outcome_update(dynamics, optimizer, batch["observations"][:, :-1],
+                                      batch["actions"], targets, param_filter=param_filter)
+            train_losses.append(loss)
+        bce, counts, n = outcome_validation(dynamics, val.episodes, args.context, args.batch_size)
+        total = bce.sum()
+        print(f"Step {(epoch + 1) * args.steps_per_epoch} train BCE {np.mean(train_losses):.6f}"
+              f" val BCE {total:.6f} ({n} windows)", flush=True)
+        for name, loss, (tp, predicted, positives) in zip(("reward", "terminal"), bce, counts.T):
+            print(f"  {name} BCE {loss:.6f}  precision {tp / predicted if predicted else float('nan'):.3f}"
+                  f"  recall {tp / positives if positives else float('nan'):.3f}"
+                  f"  positives {positives}  predicted {predicted}", flush=True)
+        if total < best:
+            save_weights(model, args.output)
+            print(f"Saved best at step {(epoch + 1) * args.steps_per_epoch}, outcome BCE {total:.9g}", flush=True)
+            best = total
+            stale = 0
+        else:
+            stale += 1
+            if args.patience and stale >= args.patience:
+                break
+
+
 def train_dynamics(args, model, env, params, transform):
     freeze_tokenizer = args.train == "dynamics"
-    optimizer = nnx.Optimizer(model.dynamics if freeze_tokenizer else model,
-                              transform, wrt=nnx.Param)
 
     data_key, train_key, val_key = jax.random.split(jax.random.key(args.seed), 3)
     episodes, _ = collect_episodes(env, params, data_key, args.episodes)
     train_eps, val_eps = episode_partitions(episodes, args.seed)
     replay = make_replay(train_eps, args.context, args.seed)
     val = make_replay(val_eps, args.context, args.seed + 1)
-    if freeze_tokenizer:
-        # Fixed latents can be reused across all updates. Validation still decodes real predictions.
-        observations = np.concatenate([ep["observations"] for ep in replay.episodes])
-        encoded = np.concatenate([np.asarray(encode_frames(model.tokenizer.layers[0], observations[i:i + 512]))
-                                  for i in range(0, len(observations), 512)])
-        offset = 0
-        for ep in replay.episodes:
-            end = offset + len(ep["observations"])
-            ep["observations"] = encoded[offset:end]
-            offset = end
+    outcome_mode = args.train in ("outcomes", "heads", "dynamics-outcomes")
+    if freeze_tokenizer or outcome_mode:
+        cache_latents(model.tokenizer.layers[0], replay)
+    if outcome_mode:
+        print(f"Training: {len(train_eps)} episodes, {len(replay.episodes)} eligible; "
+              f"validation: {len(val_eps)} episodes, {len(val.episodes)} eligible", flush=True)
+        cache_latents(model.tokenizer.layers[0], val)
+        return train_outcomes(args, model, transform, replay, val, train_key)
+    optimizer = nnx.Optimizer(model.dynamics if freeze_tokenizer else model,
+                              transform, wrt=nnx.Param)
     best = float("inf")
     stale = 0
     for epoch in range(args.epochs):
@@ -335,7 +442,8 @@ def train_dynamics(args, model, env, params, transform):
 
 def main():
     parser = argparse.ArgumentParser(description="Train the tokenizer and QKNorm shortcut dynamics")
-    parser.add_argument("--train", choices=("tokenizer", "dynamics", "both"), default="dynamics",
+    parser.add_argument("--train", choices=("tokenizer", "dynamics", "both", "outcomes", "heads",
+                                            "dynamics-outcomes"), default="dynamics",
                         help="Components to update (default: dynamics with a frozen tokenizer)")
     init = parser.add_mutually_exclusive_group()
     init.add_argument("--tokenizer-checkpoint", type=Path)
@@ -365,6 +473,8 @@ def main():
         args.epochs = EPOCHS if tokenizer_only else 50
     if args.train == "dynamics" and not (args.tokenizer_checkpoint or args.model_checkpoint):
         parser.error("dynamics training needs pretrained weights: supply --tokenizer-checkpoint or --model-checkpoint")
+    if args.train in ("outcomes", "heads", "dynamics-outcomes") and not args.model_checkpoint:
+        parser.error("outcome training requires --model-checkpoint with pretrained dynamics")
     if args.episodes < 2 or min(args.epochs, args.batch_size, args.context, args.steps_per_epoch, args.val_batches) < 1:
         parser.error("require at least two episodes and positive training dimensions")
     if not np.isfinite(args.learning_rate) or args.learning_rate <= 0:

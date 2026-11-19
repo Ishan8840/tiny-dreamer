@@ -32,12 +32,15 @@ class ReplayBuffer:
         start = randint(0, num_steps - seq_len + 1)
         end = start + seq_len
 
-        return {
+        sequence = {
             "observations": episode["observations"][start:end + 1],
             "actions": episode["actions"][start:end],
             "rewards": episode["rewards"][start:end],
             "dones": episode["dones"][start:end],
         }
+        if "terminals" in episode:
+            sequence["terminals"] = episode["terminals"][start:end]
+        return sequence
 
     def sample_batch(self, batch_size=32, seq_len=16):
         eligible = [ep for ep in self.episodes if len(ep["actions"]) >= seq_len]
@@ -47,5 +50,5 @@ class ReplayBuffer:
 
         return {
             key: np.stack([seq[key] for seq in sequences])
-            for key in sequences[0]
+            for key in sequences[0] if all(key in seq for seq in sequences)
         }
