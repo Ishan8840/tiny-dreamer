@@ -1,0 +1,49 @@
+Step 2000  train total 0.1071265 shortcut 0.0345404 rollout MSE 0.3629295  val total 0.02344 recon 0.00000 dyn 0.02344 next-frame BCE 0.08772
+Saved best at step 2000: BCE 0.0877216309
+Step 4000  train total 0.0202487 shortcut 0.0098227 rollout MSE 0.0521297  val total 0.02147 recon 0.00000 dyn 0.02147 next-frame BCE 0.07608
+Saved best at step 4000: BCE 0.0760820657
+Step 6000  train total 0.0090067 shortcut 0.0045280 rollout MSE 0.0223938  val total 0.02203 recon 0.00000 dyn 0.02203 next-frame BCE 0.06750
+Saved best at step 6000: BCE 0.0675037429
+Step 8000  train total 0.0045077 shortcut 0.0021360 rollout MSE 0.0118585  val total 0.02145 recon 0.00000 dyn 0.02145 next-frame BCE 0.05113
+Saved best at step 8000: BCE 0.0511322059
+Step 10000  train total 0.0028562 shortcut 0.0012718 rollout MSE 0.0079218  val total 0.02100 recon 0.00000 dyn 0.02100 next-frame BCE 0.04768
+Saved best at step 10000: BCE 0.0476849787
+Step 12000  train total 0.0018436 shortcut 0.0007925 rollout MSE 0.0052555  val total 0.02010 recon 0.00000 dyn 0.02010 next-frame BCE 0.04404
+Saved best at step 12000: BCE 0.0440405942
+Step 14000  train total 0.0015458 shortcut 0.0006454 rollout MSE 0.0045022  val total 0.02058 recon 0.00000 dyn 0.02058 next-frame BCE 0.04312
+Saved best at step 14000: BCE 0.0431203209
+Step 16000  train total 0.0010441 shortcut 0.0004217 rollout MSE 0.0031117  val total 0.01819 recon 0.00000 dyn 0.01819 next-frame BCE 0.03531
+Saved best at step 16000: BCE 0.0353061371
+Step 18000  train total 0.0008114 shortcut 0.0003244 rollout MSE 0.0024352  val total 0.01681 recon 0.00000 dyn 0.01681 next-frame BCE 0.03419
+Saved best at step 18000: BCE 0.0341859125
+Step 20000  train total 0.0006786 shortcut 0.0002617 rollout MSE 0.0020849  val total 0.01789 recon 0.00000 dyn 0.01789 next-frame BCE 0.03358
+Saved best at step 20000: BCE 0.0335799344
+Step 22000  train total 0.0005437 shortcut 0.0002078 rollout MSE 0.0016793  val total 0.01586 recon 0.00000 dyn 0.01586 next-frame BCE 0.03119
+Saved best at step 22000: BCE 0.0311908573
+Step 24000  train total 0.0007895 shortcut 0.0003003 rollout MSE 0.0024461  val total 0.01579 recon 0.00000 dyn 0.01579 next-frame BCE 0.03422
+Step 26000  train total 0.0003876 shortcut 0.0001445 rollout MSE 0.0012153  val total 0.01496 recon 0.00000 dyn 0.01496 next-frame BCE 0.02985
+Saved best at step 26000: BCE 0.0298452303
+Step 28000  train total 0.0003650 shortcut 0.0001315 rollout MSE 0.0011676  val total 0.01470 recon 0.00000 dyn 0.01470 next-frame BCE 0.03094
+Step 30000  train total 0.0003350 shortcut 0.0001217 rollout MSE 0.0010668  val total 0.01375 recon 0.00000 dyn 0.01375 next-frame BCE 0.02750
+Saved best at step 30000: BCE 0.0275035035
+Step 32000  train total 0.0002825 shortcut 0.0000986 rollout MSE 0.0009197  val total 0.01338 recon 0.00000 dyn 0.01338 next-frame BCE 0.02707
+Saved best at step 32000: BCE 0.0270733107
+Step 34000  train total 0.0002690 shortcut 0.0000943 rollout MSE 0.0008732  val total 0.01365 recon 0.00000 dyn 0.01365 next-frame BCE 0.02719
+Step 36000  train total 0.0007187 shortcut 0.0002600 rollout MSE 0.0022935  val total 0.01151 recon 0.00000 dyn 0.01151 next-frame BCE 0.02457
+Saved best at step 36000: BCE 0.0245662648
+Step 38000  train total 0.0001548 shortcut 0.0000604 rollout MSE 0.0004723  val total 0.01222 recon 0.00000 dyn 0.01222 next-frame BCE 0.02506
+Step 40000  train total 0.0002067 shortcut 0.0000727 rollout MSE 0.0006700  val total 0.01253 recon 0.00000 dyn 0.01253 next-frame BCE 0.02583
+Step 42000  train total 0.0002026 shortcut 0.0000708 rollout MSE 0.0006589  val total 0.01196 recon 0.00000 dyn 0.01195 next-frame BCE 0.02448
+Saved best at step 42000: BCE 0.0244786851
+Step 44000  train total 0.0001871 shortcut 0.0000627 rollout MSE 0.0006221  val total 0.01190 recon 0.00000 dyn 0.01190 next-frame BCE 0.02496
+Step 46000  train total 0.0001879 shortcut 0.0000622 rollout MSE 0.0006287  val total 0.01173 recon 0.00000 dyn 0.01173 next-frame BCE 0.02444
+Saved best at step 46000: BCE 0.0244441014
+Step 48000  train total 0.0001692 shortcut 0.0000562 rollout MSE 0.0005650  val total 0.01159 recon 0.00000 dyn 0.01159 next-frame BCE 0.02485
+Step 50000  train total 0.0006174 shortcut 0.0002289 rollout MSE 0.0019427  val total 0.01001 recon 0.00000 dyn 0.01001 next-frame BCE 0.02280
+Saved best at step 50000: BCE 0.0227980465
+Step 52000  train total 0.0001005 shortcut 0.0000395 rollout MSE 0.0003045  val total 0.01085 recon 0.00000 dyn 0.01085 next-frame BCE 0.02285
+Step 54000  train total 0.0001391 shortcut 0.0000476 rollout MSE 0.0004574  val total 0.01088 recon 0.00000 dyn 0.01088 next-frame BCE 0.02354
+Step 56000  train total 0.0001559 shortcut 0.0000505 rollout MSE 0.0005274  val total 0.01072 recon 0.00000 dyn 0.01072 next-frame BCE 0.02336
+Step 58000  train total 0.0001368 shortcut 0.0000442 rollout MSE 0.0004629  val total 0.01075 recon 0.00000 dyn 0.01075 next-frame BCE 0.02327
+Step 60000  train total 0.0001239 shortcut 0.0000405 rollout MSE 0.0004172  val total 0.01075 recon 0.00000 dyn 0.01075 next-frame BCE 0.02337
+Early stopping after 5 validations without improvement

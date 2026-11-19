@@ -1,0 +1,49 @@
+Step 2000  train weighted dynamics 0.053073  val total 0.03503 recon 0.00000 dyn 0.03503 next-frame BCE 0.14744
+Saved best at step 2000: BCE 0.14743945
+Step 4000  train weighted dynamics 0.019532  val total 0.01811 recon 0.00000 dyn 0.01811 next-frame BCE 0.09911
+Saved best at step 4000: BCE 0.0991145447
+Step 6000  train weighted dynamics 0.015247  val total 0.01475 recon 0.00000 dyn 0.01475 next-frame BCE 0.08225
+Saved best at step 6000: BCE 0.0822473764
+Step 8000  train weighted dynamics 0.006604  val total 0.00862 recon 0.00000 dyn 0.00862 next-frame BCE 0.02526
+Saved best at step 8000: BCE 0.0252586659
+Step 10000  train weighted dynamics 0.003745  val total 0.00542 recon 0.00000 dyn 0.00542 next-frame BCE 0.00908
+Saved best at step 10000: BCE 0.00908313785
+Step 12000  train weighted dynamics 0.002377  val total 0.00488 recon 0.00000 dyn 0.00488 next-frame BCE 0.00384
+Saved best at step 12000: BCE 0.00384017685
+Step 14000  train weighted dynamics 0.001720  val total 0.00317 recon 0.00000 dyn 0.00317 next-frame BCE 0.00167
+Saved best at step 14000: BCE 0.00166937755
+Step 16000  train weighted dynamics 0.001338  val total 0.00261 recon 0.00000 dyn 0.00261 next-frame BCE 0.00145
+Saved best at step 16000: BCE 0.00145084609
+Step 18000  train weighted dynamics 0.001099  val total 0.00198 recon 0.00000 dyn 0.00198 next-frame BCE 0.00089
+Saved best at step 18000: BCE 0.000893185672
+Step 20000  train weighted dynamics 0.000946  val total 0.00144 recon 0.00000 dyn 0.00144 next-frame BCE 0.00030
+Saved best at step 20000: BCE 0.000300629821
+Step 22000  train weighted dynamics 0.000843  val total 0.00133 recon 0.00000 dyn 0.00133 next-frame BCE 0.00024
+Saved best at step 22000: BCE 0.000235407846
+Step 24000  train weighted dynamics 0.000754  val total 0.00134 recon 0.00000 dyn 0.00134 next-frame BCE 0.00028
+Step 26000  train weighted dynamics 0.000676  val total 0.00118 recon 0.00000 dyn 0.00118 next-frame BCE 0.00021
+Saved best at step 26000: BCE 0.000205274206
+Step 28000  train weighted dynamics 0.000604  val total 0.00135 recon 0.00000 dyn 0.00135 next-frame BCE 0.00024
+Step 30000  train weighted dynamics 0.000591  val total 0.00123 recon 0.00000 dyn 0.00123 next-frame BCE 0.00026
+Step 32000  train weighted dynamics 0.000537  val total 0.00101 recon 0.00000 dyn 0.00101 next-frame BCE 0.00015
+Saved best at step 32000: BCE 0.000147350613
+Step 34000  train weighted dynamics 0.000482  val total 0.00110 recon 0.00000 dyn 0.00110 next-frame BCE 0.00014
+Saved best at step 34000: BCE 0.000141644035
+Step 36000  train weighted dynamics 0.000460  val total 0.00113 recon 0.00000 dyn 0.00113 next-frame BCE 0.00015
+Step 38000  train weighted dynamics 0.000454  val total 0.00112 recon 0.00000 dyn 0.00112 next-frame BCE 0.00011
+Saved best at step 38000: BCE 0.000113572169
+Step 40000  train weighted dynamics 0.000437  val total 0.00100 recon 0.00000 dyn 0.00100 next-frame BCE 0.00011
+Saved best at step 40000: BCE 0.000107358799
+Step 42000  train weighted dynamics 0.000402  val total 0.00103 recon 0.00000 dyn 0.00103 next-frame BCE 0.00014
+Step 44000  train weighted dynamics 0.000381  val total 0.00102 recon 0.00000 dyn 0.00102 next-frame BCE 0.00014
+Step 46000  train weighted dynamics 0.000375  val total 0.00086 recon 0.00000 dyn 0.00086 next-frame BCE 0.00014
+Step 48000  train weighted dynamics 0.000399  val total 0.00082 recon 0.00000 dyn 0.00082 next-frame BCE 0.00010
+Saved best at step 48000: BCE 0.000102224658
+Step 50000  train weighted dynamics 0.000341  val total 0.00079 recon 0.00000 dyn 0.00078 next-frame BCE 0.00009
+Saved best at step 50000: BCE 9.12104806e-05
+Step 52000  train weighted dynamics 0.000290  val total 0.00092 recon 0.00000 dyn 0.00092 next-frame BCE 0.00010
+Step 54000  train weighted dynamics 0.000333  val total 0.00087 recon 0.00000 dyn 0.00087 next-frame BCE 0.00017
+Step 56000  train weighted dynamics 0.000315  val total 0.00100 recon 0.00000 dyn 0.00100 next-frame BCE 0.00018
+Step 58000  train weighted dynamics 0.000300  val total 0.00077 recon 0.00000 dyn 0.00077 next-frame BCE 0.00012
+Step 60000  train weighted dynamics 0.000315  val total 0.00088 recon 0.00000 dyn 0.00088 next-frame BCE 0.00031
+Early stopping after 5 validations without improvement

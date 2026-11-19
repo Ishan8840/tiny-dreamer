@@ -9,7 +9,7 @@ import numpy as np
 from flax import nnx
 
 from evaluate_rollouts import BATCH, CONTEXT, collect_episodes, make_env, predict
-from train_dynamics import WorldModel, restore_tokenizer
+from model import WorldModel, restore_weights
 
 
 HORIZONS = tuple(range(1, 21))
@@ -45,12 +45,12 @@ def collect_windows():
     return np.stack(observations).astype(bool), np.stack(actions)
 
 
-def main(qknorm_ablation=False):
+def main(qknorm_ablation=False, swiglu_softcap_ablation=False, multistep_ablation=False):
     OUT.mkdir(parents=True, exist_ok=True)
     archive = OUT / "windows.npz"
     if not archive.exists():
-        if qknorm_ablation:
-            raise FileNotFoundError("The QKNorm comparison requires the archived matched rollout set")
+        if qknorm_ablation or swiglu_softcap_ablation or multistep_ablation:
+            raise FileNotFoundError("The ablation requires the archived matched rollout set")
         obs, actions = collect_windows()
         np.savez_compressed(archive, observations=obs, actions=actions)
     with np.load(archive) as data:
@@ -59,13 +59,22 @@ def main(qknorm_ablation=False):
     assert np.all(obs[:, CONTEXT:, :, :, 1].sum(axis=(2, 3)) == 1)
     rows = []
     result_dir = OUT / "qknorm" if qknorm_ablation else OUT
-    result_dir.mkdir(exist_ok=True)
     runs = ({"Baseline": RUNS["AdamW 60k"], "QKNorm": "breakout-frozen-qknorm-100k-0"}
             if qknorm_ablation else RUNS)
+    if swiglu_softcap_ablation:
+        result_dir = OUT / "swiglu-softcap"
+        runs = {"SiLU": "breakout-frozen-qknorm-100k-0", "SwiGLU": "breakout-swiglu-100k-0",
+                "SiLU + cap": "breakout-cap5-100k-0", "SwiGLU + cap": "breakout-swiglu-cap5-100k-0"}
+    if multistep_ablation:
+        result_dir = OUT / "multistep"
+        runs = {"Shortcut": "breakout-frozen-qknorm-100k-0",
+                "Shortcut + 3-frame MSE": "breakout-multistep3-100k-0"}
+    result_dir.mkdir(exist_ok=True)
     fig, ax = plt.subplots(figsize=(7, 4))
     for name, run in runs.items():
-        model = WorldModel(nnx.Rngs(0), 4, 3, qknorm=(name == "QKNorm"))
-        restore_tokenizer(model, Path("runs") / run / "best.msgpack")
+        model = WorldModel(nnx.Rngs(0), 4, 3, qknorm=(swiglu_softcap_ablation or multistep_ablation or name == "QKNorm"),
+                           swiglu=name.startswith("SwiGLU"), softcap=5.0 if name.endswith("+ cap") else 0.0)
+        restore_weights(model, Path("runs") / run / "best.msgpack")
         exact, distances = [], []
         for start in range(0, len(obs), BATCH):
             ids = np.minimum(np.arange(start, start + BATCH), len(obs) - 1)
@@ -105,5 +114,9 @@ def main(qknorm_ablation=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--qknorm-ablation", action="store_true")
-    main(parser.parse_args().qknorm_ablation)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--qknorm-ablation", action="store_true")
+    group.add_argument("--swiglu-softcap-ablation", action="store_true")
+    group.add_argument("--multistep-ablation", action="store_true")
+    args = parser.parse_args()
+    main(args.qknorm_ablation, args.swiglu_softcap_ablation, args.multistep_ablation)

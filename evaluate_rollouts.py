@@ -14,7 +14,7 @@ from matplotlib.patches import Patch
 
 from collect import collect_episodes
 from env import make_env
-from train_dynamics import WorldModel, restore_tokenizer
+from model import WorldModel, denoise_next, restore_weights
 
 
 HORIZONS = (1, 5, 10, 20)
@@ -44,7 +44,6 @@ def reconstruct(model, frames):
 def predict(model, context, actions, ids, horizons=HORIZONS):
     encoder, decoder = model.tokenizer.layers
     history = encoder(context)
-    d = jnp.full((len(ids),), 0.25)
 
     def step(history, index):
         action_window = jax.lax.dynamic_slice_in_dim(actions, index, CONTEXT, axis=1)
@@ -52,11 +51,7 @@ def predict(model, context, actions, ids, horizons=HORIZONS):
         noise = jax.vmap(lambda i: jax.random.normal(jax.random.fold_in(key, i),
                                                      (history.shape[-1],)))(ids)
 
-        def denoise(k, latent):
-            clean = model.dynamics(history, action_window, latent, k * d, d)
-            return latent + (clean - latent) / (4 - k)
-
-        latent = jax.lax.fori_loop(0, 4, denoise, noise)
+        latent = denoise_next(model.dynamics, history, action_window, noise, 4)
         return jnp.concatenate((history[:, 1:], latent[:, None]), axis=1), latent
 
     _, latents = jax.lax.scan(step, history, jnp.arange(max(horizons)))
@@ -104,7 +99,7 @@ def main():
     observations = np.concatenate([ep["observations"] for ep in val])
     for name in ("frozen",):
         model = WorldModel(nnx.Rngs(0), 4, 3, qknorm=False)
-        restore_tokenizer(model, Path(f"runs/breakout-{name}-0/best.msgpack"))
+        restore_weights(model, Path(f"runs/breakout-{name}-0/best.msgpack"))
         reconstruction_counts = np.zeros(7, dtype=np.int64)
         for start in range(0, len(observations), 512):
             batch = observations[start:start + 512]

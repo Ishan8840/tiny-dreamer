@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageFont
 from flax import nnx
 from matplotlib import font_manager
 
-from evaluate_matched_breakout import BATCH, CONTEXT, HORIZONS, OUT, RUNS, WorldModel, predict, restore_tokenizer
+from evaluate_matched_breakout import BATCH, CONTEXT, HORIZONS, OUT, RUNS, WorldModel, predict, restore_weights
 
 
 BG = "#f6f7f9"
@@ -77,7 +77,7 @@ def main():
     with np.load(OUT / "windows.npz") as data:
         obs, actions = data["observations"], data["actions"]
     model = WorldModel(nnx.Rngs(0), 4, 3, qknorm=False)
-    restore_tokenizer(model, Path("runs") / run / "best.msgpack")
+    restore_weights(model, Path("runs") / run / "best.msgpack")
     folder = OUT / "visuals-60k"
     folder.mkdir(exist_ok=True)
     examples = []
