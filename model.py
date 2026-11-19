@@ -218,4 +218,4 @@ def dynamics_loss(
 
     ramp_weight = 0.9 * noise_level + 0.1
 
-    return jnp.mean(loss + ramp_weight)
+    return jnp.mean(loss * ramp_weight)
