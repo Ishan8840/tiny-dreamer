@@ -50,7 +50,7 @@ def reconstruction_loss(logits, observations):
     return jnp.mean(loss)
 
 
-class TransfomerBlock(nnx.Module):
+class TransformerBlock(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4):
         self.norm1 = nnx.RMSNorm(d_model, rngs=rngs)
 
@@ -71,8 +71,22 @@ class TransfomerBlock(nnx.Module):
     def __call__(self, x, mask):
         x = x + self.attn(self.norm1(x), mask=mask)
 
-        x = x + self.fc1(self.norm2(x))
-        x = jax.nn.silu(x)
-        x = x + self.fc2(x)
+        h = self.fc1(self.norm2(x))
+        h = jax.nn.silu(h)
+        h = self.fc2(h)
 
-        return x
+        return x + h
+
+
+class DynamicsModel(nnx.Module):
+    def __init__(self, action_dim, latent_dim, d_model=128, n_heads=4):
+        self.action_emb = nnx.Linear(action_dim, d_model)
+        self.latent_emb = nnx.Linear(latent_dim, d_model)
+
+        self.t1 = TransformerBlock(d_model, n_heads)
+        self.t2 = TransformerBlock(d_model, n_heads)
+
+        self.f1 = nnx.Linear(d_model, latent_dim)
+
+    def __call__(self, history_latents, history_actions, noisy_latent, noise_level, step_size,):
+        pass
