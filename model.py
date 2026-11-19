@@ -74,17 +74,40 @@ def reconstruction_loss(logits, observations):
     return jnp.mean(loss)
 
 
+class RoPEAttention(nnx.Module):
+    def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4):
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+
+        self.q_proj = nnx.Linear(d_model, d_model, rngs=rngs)
+        self.k_proj = nnx.Linear(d_model, d_model, rngs=rngs)
+        self.v_proj = nnx.Linear(d_model, d_model, rngs=rngs)
+        self.out_proj = nnx.Linear(d_model, d_model, rngs=rngs)
+
+    def __call__(self, x):
+        B, T, _ = x.shape
+
+        q = self.q_proj(x).reshape(B, T, self.n_heads, self.head_dim)
+        k = self.k_proj(x).reshape(B, T, self.n_heads, self.head_dim)
+        v = self.v_proj(x).reshape(B, T, self.n_heads, self.head_dim)
+
+        q = apply_rope(q)
+        k = apply_rope(k)
+
+        mask = jnp.tril(jnp.ones((T, T), dtype=bool))
+
+        out = jax.nn.dot_product_attention(q, k, v, mask=mask)
+
+        out = out.reshape(B, T, self.n_heads * self.head_dim)
+
+
 class TransformerBlock(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4):
         self.norm1 = nnx.RMSNorm(d_model, rngs=rngs)
 
-        self.attn = nnx.MultiHeadAttention(
-            num_heads=n_heads,
-            in_features=d_model,
-            qkv_features=d_model,
-            out_features=d_model,
-            decode=False,
-            rngs=rngs,
+        self.attn = RoPEAttention(
+            d_model=d_model,
+            n_heads=n_heads,
         )
 
         self.norm2 = nnx.RMSNorm(d_model, rngs=rngs)
@@ -106,7 +129,6 @@ class DynamicsModel(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim=64, d_model=128, n_heads=4):
         self.latent_emb = nnx.Linear(latent_dim, d_model, rngs=rngs)
         self.action_emb = nnx.Embed(num_embeddings=action_dim, features=d_model, rngs=rngs)
-        self.pos_emb = nnx.Embed(num_embeddings=16, features=d_model, rngs=rngs)
 
         self.t1 = TransformerBlock(d_model, n_heads)
         self.t2 = TransformerBlock(d_model, n_heads)
