@@ -477,6 +477,10 @@ def actor_critic_update(agent, optimizer, dynamics, history, past_actions, key, 
     targets = jax.lax.stop_gradient(lambda_returns(rewards, discounts, next_values, trace_decay))
     weights = jnp.cumprod(jnp.concatenate((jnp.ones_like(discounts[:1]), discounts[:-1])), axis=0)
 
+    return policy_update(agent, optimizer, states, actions, targets, weights, entropy_scale)
+
+
+def policy_update(agent, optimizer, states, actions, targets, weights, entropy_scale):
     def loss_fn(net):
         values = net.critic(states)[..., 0]
         advantage = jax.lax.stop_gradient(targets - values)
@@ -507,7 +511,7 @@ def policy_returns(actor, encoder, env, params, key, episodes):
         done |= jax.vmap(env.is_truncated, in_axes=(0, None))(next_states, params)
         # Finished lanes keep their last valid state until the longest episode ends.
         def keep_active(new, old):
-            mask = active.reshape((episodes,) + (1,) * (new.ndim - 1))
+            mask = (active & ~done).reshape((episodes,) + (1,) * (new.ndim - 1))
             return jnp.where(mask, new, old)
         next_states = jax.tree.map(keep_active, next_states, env_states)
         return (key, next_states, current, encoder(obs.astype(jnp.float32)), active & ~done,
@@ -553,10 +557,77 @@ def train_actor_critic(args, model, env, params, transform):
                 break
 
 
+def real_rollout(agent, encoder, env, params, carry, horizon, gamma, bootstrap_timeouts=True):
+    def transition(carry, _):
+        key, env_states, previous, current = carry
+        key, action_key, step_key, reset_key = jax.random.split(key, 4)
+        state = jnp.concatenate((previous, current), axis=-1)
+        action = jax.random.categorical(action_key, agent.actor(state))
+        batch = action.shape[0]
+        obs, next_env, reward, done, _ = jax.vmap(env.step_env, in_axes=(0, 0, 0, None))(
+            jax.random.split(step_key, batch), env_states, action, params)
+        terminal = jax.vmap(env.is_terminated, in_axes=(0, None))(next_env, params)
+        done |= jax.vmap(env.is_truncated, in_axes=(0, None))(next_env, params)
+        next_z = encoder(obs.astype(jnp.float32))
+        next_value = agent.critic(jnp.concatenate((current, next_z), axis=-1))[..., 0]
+        # Bootstrap at time limits, but never propagate a return across an episode reset.
+        if bootstrap_timeouts:
+            reward = reward + gamma * (done & ~terminal) * next_value
+        reset_obs, reset_env = jax.vmap(env.reset, in_axes=(0, None))(jax.random.split(reset_key, batch), params)
+        def reset_lanes(reset, ongoing):
+            mask = done.reshape((batch,) + (1,) * (ongoing.ndim - 1))
+            return jnp.where(mask, reset, ongoing)
+        next_env = jax.tree.map(reset_lanes, reset_env, next_env)
+        reset_z = encoder(reset_obs.astype(jnp.float32))
+        carry = (key, next_env, reset_lanes(reset_z, current), reset_lanes(reset_z, next_z))
+        return carry, (state, action, reward, gamma * ~done, next_value, done)
+
+    return jax.lax.scan(transition, carry, xs=None, length=horizon)
+
+
+@nnx.jit(static_argnames=("env", "horizon"))
+def real_actor_critic_update(agent, optimizer, encoder, env, params, carry, horizon, gamma,
+                             trace_decay, entropy_scale):
+    carry, (states, actions, rewards, discounts, next_values, _) = real_rollout(
+        agent, encoder, env, params, carry, horizon, gamma)
+    targets = lambda_returns(rewards, discounts, next_values, trace_decay)
+    losses = policy_update(agent, optimizer, states, actions, targets, jnp.ones_like(rewards), entropy_scale)
+    return carry, losses
+
+
+def train_real_agent(args, model, env, params, transform):
+    reset_key, key, eval_key, init_key = jax.random.split(jax.random.key(args.seed), 4)
+    obs, env_states = jax.vmap(env.reset, in_axes=(0, None))(
+        jax.random.split(reset_key, args.batch_size), params)
+    encoder = model.tokenizer.layers[0]
+    latent = encode_frames(encoder, obs)
+    carry = (key, env_states, latent, latent)
+    rngs = nnx.Rngs(init_key)
+    agent = nnx.Dict(actor=Actor(rngs, env.action_space(params).n, latent.shape[-1] * 2),
+                     critic=Critic(rngs, latent.shape[-1] * 2))
+    optimizer = nnx.Optimizer(agent, transform, wrt=nnx.Param)
+    best = -np.inf
+    for epoch in range(args.epochs + 1):
+        if epoch:
+            for _ in range(args.steps_per_epoch):
+                carry, losses = real_actor_critic_update(agent, optimizer, encoder, env, params, carry,
+                    args.real_horizon, args.discount, args.lambda_return, args.entropy_scale)
+        step = epoch * args.steps_per_epoch
+        returns = policy_returns(agent.actor, encoder, env, params, eval_key, args.eval_episodes)
+        score = float(returns.mean())
+        print(f"Update {step} actions {step * args.real_horizon * args.batch_size} "
+              f"mean return {score:.6f}", flush=True)
+        if epoch and not np.isfinite(np.asarray(losses)).all():
+            raise FloatingPointError("Nonfinite actor-critic loss")
+        if score > best:
+            save_weights(agent, args.output)
+            best = score
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train the tokenizer and QKNorm shortcut dynamics")
     parser.add_argument("--train", choices=("tokenizer", "dynamics", "both", "outcomes", "heads",
-                                            "dynamics-outcomes", "actor-critic"), default="dynamics",
+                                            "dynamics-outcomes", "actor-critic", "real-actor-critic"), default="dynamics",
                         help="Components to update (default: dynamics with a frozen tokenizer)")
     init = parser.add_mutually_exclusive_group()
     init.add_argument("--tokenizer-checkpoint", type=Path)
@@ -565,7 +636,7 @@ def main():
     parser.add_argument("--game", default="Breakout")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--episodes", type=int, help="Defaults to 10,000 for tokenizer or 1,000 for dynamics")
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--batch-size", type=int, help="Defaults to 32 for real-game training and 64 otherwise")
     parser.add_argument("--learning-rate", type=float, default=LEARNING_RATE)
     parser.add_argument("--optimizer", choices=("adamw", "adam"),
                         help="Defaults to Adam for tokenizer or AdamW for dynamics and joint training")
@@ -578,16 +649,34 @@ def main():
     dyn.add_argument("--patience", type=int, default=5, help="Validation checks without improvement (0 disables)")
     dyn.add_argument("--dynamics-weight", type=float, default=1.0)
     dyn.add_argument("--denoising-steps", type=int, choices=(1, 2, 4, 8, 16), default=DEFAULT_DENOISING_STEPS)
-    policy = parser.add_argument_group("offline actor-critic")
+    policy = parser.add_argument_group("actor-critic")
     policy.add_argument("--imagination-horizon", type=int, default=5)
     policy.add_argument("--discount", type=float, default=0.99)
     policy.add_argument("--lambda-return", type=float, default=0.95)
     policy.add_argument("--entropy-scale", type=float, default=0.001)
     policy.add_argument("--eval-episodes", type=int, default=64)
+    policy.add_argument("--real-horizon", type=int, default=5, help="Real transitions per environment per update")
+    policy.add_argument("--policy-method", choices=("a2c", "ppo", "reinforce", "pmpo"),
+                        help="Real-game training method (default: ppo)")
+    policy.add_argument("--actor-learning-rate", type=float, help="Defaults to 1e-4 for PPO; other methods use --learning-rate")
     args = parser.parse_args()
-    if args.train == "actor-critic":
-        if not args.model_checkpoint:
+    real_game = args.train == "real-actor-critic"
+    if args.batch_size is None:
+        args.batch_size = 32 if real_game else BATCH_SIZE
+    if args.actor_learning_rate is not None and (not np.isfinite(args.actor_learning_rate) or args.actor_learning_rate <= 0):
+        parser.error("--actor-learning-rate must be finite and positive")
+    if real_game:
+        args.policy_method = args.policy_method or "ppo"
+        if args.actor_learning_rate is None:
+            args.actor_learning_rate = 1e-4 if args.policy_method == "ppo" else args.learning_rate
+    elif args.policy_method or args.actor_learning_rate is not None:
+        parser.error("real-game policy options require --train real-actor-critic")
+    if args.train in ("actor-critic", "real-actor-critic"):
+        if args.train == "actor-critic" and not args.model_checkpoint:
             parser.error("actor-critic requires --model-checkpoint with trained reward and terminal heads")
+        if args.train == "real-actor-critic" and (not (args.model_checkpoint or args.tokenizer_checkpoint)
+                                                  or args.real_horizon < 1):
+            parser.error("real-actor-critic requires pretrained encoder weights and a positive real-horizon")
         if args.context < 2 or min(args.imagination_horizon, args.eval_episodes) < 1:
             parser.error("actor-critic requires context >= 2 and positive imagination horizon and eval episodes")
         if not (0 <= args.discount <= 1 and 0 <= args.lambda_return <= 1
@@ -633,6 +722,9 @@ def main():
               epochs=args.epochs, batch_size=args.batch_size, output=args.output, transform=transform)
     elif args.train == "actor-critic":
         train_actor_critic(args, model, env, params, transform)
+    elif args.train == "real-actor-critic":
+        from policy_ablation import run
+        run(args, model, env, params)
     else:
         train_dynamics(args, model, env, params, transform)
 
