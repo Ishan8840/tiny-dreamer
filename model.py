@@ -129,23 +129,25 @@ class DynamicsModel(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim=64, d_model=128, n_heads=4):
         self.latent_emb = nnx.Linear(latent_dim, d_model, rngs=rngs)
         self.action_emb = nnx.Embed(num_embeddings=action_dim, features=d_model, rngs=rngs)
-        self.noise_emb = nnx.Linear(1, d_model, rngs=rngs)
-        self.step_emb = nnx.Linear(1, d_model, rngs=rngs)
+        self.shortcut_emb = nnx.Linear(2, d_model, rngs=rngs)
 
         self.blocks = [TransformerBlock(rngs, d_model, n_heads) for _ in range(2)]
 
         self.out_proj = nnx.Linear(d_model, latent_dim, rngs=rngs)
 
     def __call__(self, history_latents, history_actions, noisy_latent, noise_level, step_size):
-        x = self.latent_emb(history_latents) + self.action_emb(history_actions)
+        history_tokens = self.latent_emb(history_latents) + self.action_emb(history_actions)
 
-        tau_emb = self.noise_emb(noise_level[:, None])
-        step_emb = self.step_emb(step_size[:, None])
+        shortcut = jnp.stack([noise_level, step_size], axis=-1)
+        shortcut_token = self.shortcut_emb(shortcut)[:, None, :]
 
-        future_token = self.latent_emb(noisy_latent) + tau_emb + step_emb
+        future_token = self.latent_emb(noisy_latent)
         future_token = future_token[:, None, :]
 
-        x = jnp.concatenate([x, future_token], axis=1)
+        x = jnp.concatenate(
+            [history_tokens, shortcut_token, future_token],
+            axis=1,
+        )
 
         for block in self.blocks:
             x = block(x)
@@ -154,3 +156,66 @@ class DynamicsModel(nnx.Module):
         predicted_clean = self.out_proj(future_hidden)
 
         return predicted_clean
+
+
+def dynamics_loss(
+    history_latents,
+    history_actions,
+    noisy_latent,
+    noise_level,
+    step_size,
+    predicted_latent,
+    target_latent,
+    model,
+    d_min,
+):
+    half_step = step_size / 2
+
+    b_1 = (
+        model(
+            history_latents,
+            history_actions,
+            noisy_latent,
+            noise_level,
+            half_step,
+        ) - noisy_latent
+    ) / (1 - noise_level)[:, None]
+
+    z_prime = noisy_latent + half_step[:, None] * b_1
+    t_prime = noise_level + half_step
+
+    b_2 = (
+        model(
+            history_latents,
+            history_actions,
+            z_prime,
+            t_prime,
+            half_step,
+        ) - z_prime
+    ) / (1 - t_prime)[:, None]
+
+    target_velocity = jax.lax.stop_gradient((b_1 + b_2) / 2)
+
+    predicted_velocity = (
+        predicted_latent - noisy_latent
+    ) / (1 - noise_level)[:, None]
+
+    reconstruction_loss = jnp.mean(
+        (predicted_latent - target_latent) ** 2,
+        axis=-1,
+    )
+
+    shortcut_loss = ((1 - noise_level) ** 2) * jnp.mean(
+        (predicted_velocity - target_velocity) ** 2,
+        axis=-1,
+    )
+
+    loss = jnp.where(
+        jnp.isclose(step_size, d_min),
+        reconstruction_loss,
+        shortcut_loss,
+    )
+
+    ramp_weight = 0.9 * noise_level + 0.1
+
+    return jnp.mean(loss + ramp_weight)
