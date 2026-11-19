@@ -67,6 +67,7 @@ class RoPEAttention(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4, qknorm=True, softcap=0.0):
         if n_heads < 1 or d_model < 1 or d_model % (2 * n_heads):
             raise ValueError("RoPE requires an even head dimension and equally sized heads")
+        
         self.n_heads = n_heads
         self.softcap = softcap
         self.head_dim = d_model // n_heads
@@ -77,7 +78,7 @@ class RoPEAttention(nnx.Module):
         self.v_proj = nnx.Linear(d_model, d_model, rngs=rngs)
         self.out_proj = nnx.Linear(d_model, d_model, rngs=rngs)
 
-    def __call__(self, x):
+    def __call__(self, x, mask=None):
         B, T, _ = x.shape
 
         q = self.q_proj(x).reshape(B, T, self.n_heads, self.head_dim)
@@ -89,20 +90,39 @@ class RoPEAttention(nnx.Module):
 
         scale = None
         if self.qk_scale is not None:
-            q = q * jax.lax.rsqrt(jnp.maximum(jnp.sum(q * q, axis=-1, keepdims=True), 1e-12))
-            k = k * jax.lax.rsqrt(jnp.maximum(jnp.sum(k * k, axis=-1, keepdims=True), 1e-12))
+            q = q * jax.lax.rsqrt(
+                jnp.maximum(jnp.sum(q * q, axis=-1, keepdims=True), 1e-12)
+            )
+            k = k * jax.lax.rsqrt(
+                jnp.maximum(jnp.sum(k * k, axis=-1, keepdims=True), 1e-12)
+            )
             q = q * self.qk_scale[...]
             scale = 1.0
+
+        if mask is None:
+            mask = jnp.tril(jnp.ones((T, T), dtype=bool))
+
+        mask = mask[None, None, :, :]
+
         if self.softcap:
             logits = jnp.einsum("bthd,bshd->bhts", q, k)
+
             if scale is None:
                 logits = logits * self.head_dim ** -0.5
+
             logits = self.softcap * jnp.tanh(logits / self.softcap)
-            causal = jnp.tril(jnp.ones((T, T), dtype=bool))
-            weights = jax.nn.softmax(jnp.where(causal, logits, -jnp.inf), axis=-1)
+
+            weights = jax.nn.softmax(
+                jnp.where(mask, logits, -jnp.inf),
+                axis=-1,
+            )
             out = jnp.einsum("bhts,bshd->bthd", weights, v)
         else:
-            out = jax.nn.dot_product_attention(q, k, v, scale=scale, is_causal=True)
+            out = jax.nn.dot_product_attention(
+                q, k, v,
+                mask=mask,
+                scale=scale,
+            )
 
         out = out.reshape(B, T, self.n_heads * self.head_dim)
         return self.out_proj(out)
@@ -131,11 +151,13 @@ class TransformerBlock(nnx.Module):
         x = x + self.attn(self.norm1(x))
 
         h = self.fc1(self.norm2(x))
+
         if self.swiglu:
             gate, value = jnp.split(h, 2, axis=-1)
             h = jax.nn.silu(gate) * value
         else:
             h = jax.nn.silu(h)
+
         h = self.fc2(h)
 
         return x + h
@@ -147,6 +169,7 @@ class DynamicsModel(nnx.Module):
         self.latent_emb = nnx.Linear(latent_dim, d_model, rngs=rngs)
         self.action_emb = nnx.Embed(num_embeddings=action_dim, features=d_model, rngs=rngs)
         self.shortcut_emb = nnx.Linear(2, d_model, rngs=rngs)
+        self.agent_token = nnx.Param(jnp.zeros((1, 1, d_model)))
 
         self.blocks = nnx.List([TransformerBlock(rngs, d_model, n_heads, qknorm, swiglu, softcap)
                                 for _ in range(2)])
@@ -162,15 +185,30 @@ class DynamicsModel(nnx.Module):
         future_token = self.latent_emb(noisy_latent)
         future_token = future_token[:, None, :]
 
+        B = history_tokens.shape[0]
+
+        agent_token = jnp.broadcast_to(
+            self.agent_token.value,
+            (B, 1, self.d_model),
+        )
+
         x = jnp.concatenate(
-            [history_tokens, shortcut_token, future_token],
+            [history_tokens, shortcut_token, future_token, agent_token],
             axis=1,
         )
 
-        for block in self.blocks:
-            x = block(x)
+        H = history_tokens.shape[1]
+        T = H + 3
 
-        future_hidden = x[:, -1, :]
+        mask = jnp.tril(jnp.ones((T, T), dtype=bool))
+        mask = mask.at[-1, H:H+2].set(False)
+
+        for block in self.blocks:
+            x = block(x, mask=mask)
+
+        future_hidden = x[:, -2, :]
+        agent_hidden = x[:, -1, :]
+
         predicted_clean = self.out_proj(future_hidden)
 
         return predicted_clean
