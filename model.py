@@ -48,3 +48,31 @@ def reconstruction_loss(logits, observations):
     )
 
     return jnp.mean(loss)
+
+
+class TransfomerBlock(nnx.Module):
+    def __init__(self, rngs: nnx.Rngs, d_model=128, n_heads=4):
+        self.norm1 = nnx.RMSNorm(d_model, rngs=rngs)
+
+        self.attn = nnx.MultiHeadAttention(
+            num_heads=n_heads,
+            in_features=d_model,
+            qkv_features=d_model,
+            out_features=d_model,
+            decode=False,
+            rngs=rngs,
+        )
+
+        self.norm2 = nnx.RMSNorm(d_model, rngs=rngs)
+
+        self.fc1 = nnx.Linear(d_model, 4 * d_model, rngs=rngs)
+        self.fc2 = nnx.Linear(4 * d_model, d_model, rngs=rngs)
+
+    def __call__(self, x, mask):
+        x = x + self.attn(self.norm1(x), mask=mask)
+
+        x = x + self.fc1(self.norm2(x))
+        x = jax.nn.silu(x)
+        x = x + self.fc2(x)
+
+        return x
