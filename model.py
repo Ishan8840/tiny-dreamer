@@ -5,6 +5,30 @@ import optax
 import jax.numpy as jnp
 
 
+def apply_rope(x):
+    B, T, H, D = x.shape
+
+    positions = jnp.arange(T)
+    frequencies = 1.0 / (
+        10000 ** (jnp.arange(0, D, 2) / D)
+    )
+
+    angles = positions[:, None] * frequencies[None, :]
+
+    cos = jnp.cos(angles)[None, :, None, :]
+    sin = jnp.sin(angles)[None, :, None, :]
+
+    x_even = x[..., 0::2]
+    x_odd = x[..., 1::2]
+
+    rotated_even = x_even * cos - x_odd * sin
+    rotated_odd = x_even * sin + x_odd * cos
+
+    return jnp.stack(
+        [rotated_even, rotated_odd], axis=-1
+    ).reshape(x.shape)
+
+
 class Encoder(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, channels, latent_dim):
         self.conv1 = nnx.Conv(channels, 16, kernel_size=(3, 3),padding="VALID", rngs=rngs)
@@ -79,9 +103,10 @@ class TransformerBlock(nnx.Module):
 
 
 class DynamicsModel(nnx.Module):
-    def __init__(self, action_dim, latent_dim, d_model=128, n_heads=4):
-        self.action_emb = nnx.Linear(action_dim, d_model)
-        self.latent_emb = nnx.Linear(latent_dim, d_model)
+    def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim=64, d_model=128, n_heads=4):
+        self.latent_emb = nnx.Linear(latent_dim, d_model, rngs=rngs)
+        self.action_emb = nnx.Embed(num_embeddings=action_dim, features=d_model, rngs=rngs)
+        self.pos_emb = nnx.Embed(num_embeddings=16, features=d_model, rngs=rngs)
 
         self.t1 = TransformerBlock(d_model, n_heads)
         self.t2 = TransformerBlock(d_model, n_heads)
@@ -89,4 +114,8 @@ class DynamicsModel(nnx.Module):
         self.f1 = nnx.Linear(d_model, latent_dim)
 
     def __call__(self, history_latents, history_actions, noisy_latent, noise_level, step_size,):
-        pass
+        x = self.latent_emb(history_latents) + self.action_emb(history_actions)
+
+        T = history_latents.shape[1]
+        positions = jnp.arange(T)
+        x = x + self.pos_emb(positions)[None, :, :]
