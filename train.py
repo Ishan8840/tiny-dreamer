@@ -2,6 +2,7 @@ import jax
 import numpy as np
 import optax
 from flax import nnx
+import jax.numpy as jnp
 
 from collect import collect_episodes
 from env import make_env
@@ -14,11 +15,107 @@ EPOCHS = 20
 LATENT_DIM = 128
 
 
+def reconstruction_loss(logits, observations):
+    loss = optax.sigmoid_binary_cross_entropy(
+        logits,
+        observations.astype(jnp.float32)
+    )
+
+    return jnp.mean(loss)
+
+
 def batch_loss(model, observations):
     return reconstruction_loss(model(observations), observations)
 
 
+def dynamics_loss(
+    history_latents,
+    history_actions,
+    noisy_latent,
+    noise_level,
+    step_size,
+    predicted_latent,
+    target_latent,
+    model,
+    d_min,
+):
+    half_step = step_size / 2
+
+    b_1 = (
+        model(
+            history_latents,
+            history_actions,
+            noisy_latent,
+            noise_level,
+            half_step,
+        ) - noisy_latent
+    ) / (1 - noise_level)[:, None]
+
+    z_prime = noisy_latent + half_step[:, None] * b_1
+    t_prime = noise_level + half_step
+
+    b_2 = (
+        model(
+            history_latents,
+            history_actions,
+            z_prime,
+            t_prime,
+            half_step,
+        ) - z_prime
+    ) / (1 - t_prime)[:, None]
+
+    target_velocity = jax.lax.stop_gradient((b_1 + b_2) / 2)
+
+    predicted_velocity = (
+        predicted_latent - noisy_latent
+    ) / (1 - noise_level)[:, None]
+
+    reconstruction_loss = jnp.mean(
+        (predicted_latent - target_latent) ** 2,
+        axis=-1,
+    )
+
+    shortcut_loss = ((1 - noise_level) ** 2) * jnp.mean(
+        (predicted_velocity - target_velocity) ** 2,
+        axis=-1,
+    )
+
+    loss = jnp.where(
+        jnp.isclose(step_size, d_min),
+        reconstruction_loss,
+        shortcut_loss,
+    )
+
+    ramp_weight = 0.9 * noise_level + 0.1
+
+    return jnp.mean(loss * ramp_weight)
+
+
 validation_step = nnx.jit(batch_loss)
+
+
+def sample_noisy_latents(target_latent, rng):
+    B = target_latent.shape[0]
+
+    noise_key, t_key = jax.random.split(rng)
+
+    noise = jax.random.normal(
+        noise_key, target_latent.shape
+    )
+
+    t = jax.random.uniform(
+        t_key,
+        shape=(B,),
+        minval=0.0,
+        maxval=1.0,
+    )
+
+    noisy_latent = (
+        t[:, None] * target_latent
+        + (1 - t[:, None]) * noise
+    )
+
+    return noisy_latent, t
 
 
 def split_episodes(episodes, seed=0):

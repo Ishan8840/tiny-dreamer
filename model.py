@@ -65,13 +65,7 @@ class Decoder(nnx.Module):
         return x
 
 
-def reconstruction_loss(logits, observations):
-    loss = optax.sigmoid_binary_cross_entropy(
-        logits,
-        observations.astype(jnp.float32)
-    )
 
-    return jnp.mean(loss)
 
 
 class RoPEAttention(nnx.Module):
@@ -158,64 +152,3 @@ class DynamicsModel(nnx.Module):
         return predicted_clean
 
 
-def dynamics_loss(
-    history_latents,
-    history_actions,
-    noisy_latent,
-    noise_level,
-    step_size,
-    predicted_latent,
-    target_latent,
-    model,
-    d_min,
-):
-    half_step = step_size / 2
-
-    b_1 = (
-        model(
-            history_latents,
-            history_actions,
-            noisy_latent,
-            noise_level,
-            half_step,
-        ) - noisy_latent
-    ) / (1 - noise_level)[:, None]
-
-    z_prime = noisy_latent + half_step[:, None] * b_1
-    t_prime = noise_level + half_step
-
-    b_2 = (
-        model(
-            history_latents,
-            history_actions,
-            z_prime,
-            t_prime,
-            half_step,
-        ) - z_prime
-    ) / (1 - t_prime)[:, None]
-
-    target_velocity = jax.lax.stop_gradient((b_1 + b_2) / 2)
-
-    predicted_velocity = (
-        predicted_latent - noisy_latent
-    ) / (1 - noise_level)[:, None]
-
-    reconstruction_loss = jnp.mean(
-        (predicted_latent - target_latent) ** 2,
-        axis=-1,
-    )
-
-    shortcut_loss = ((1 - noise_level) ** 2) * jnp.mean(
-        (predicted_velocity - target_velocity) ** 2,
-        axis=-1,
-    )
-
-    loss = jnp.where(
-        jnp.isclose(step_size, d_min),
-        reconstruction_loss,
-        shortcut_loss,
-    )
-
-    ramp_weight = 0.9 * noise_level + 0.1
-
-    return jnp.mean(loss * ramp_weight)
