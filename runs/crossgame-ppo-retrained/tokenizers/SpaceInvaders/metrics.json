@@ -1,0 +1,11 @@
+{
+  "game": "SpaceInvaders",
+  "seed": 17,
+  "train_frames": 101404,
+  "validation_frames": 11068,
+  "exact_frames": 10933,
+  "exact_frame_accuracy": 0.9878026743765811,
+  "positive_pixel_f1": 0.9998156283314364,
+  "bce": 0.00011173446218824288,
+  "sha256": "fc7a1a56f39ca67254ac27479284074e78cdc72723b94fbedf68dc031940287f"
+}

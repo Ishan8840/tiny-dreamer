@@ -1,0 +1,22 @@
+E1119 12:10:44.578251 1134864 cuda_timer.cc:88] Delay kernel timed out: measured time has sub-optimal accuracy. There may be a missing warmup execution, please investigate in Nsight Systems.
+Epoch 1/20  train BCE 0.08117  val BCE 0.02943
+Epoch 2/20  train BCE 0.01772  val BCE 0.01263
+Epoch 3/20  train BCE 0.00793  val BCE 0.00778
+Epoch 4/20  train BCE 0.00432  val BCE 0.00574
+Epoch 5/20  train BCE 0.00264  val BCE 0.00432
+Epoch 6/20  train BCE 0.00171  val BCE 0.00365
+Epoch 7/20  train BCE 0.00119  val BCE 0.00342
+Epoch 8/20  train BCE 0.00086  val BCE 0.00276
+Epoch 9/20  train BCE 0.00065  val BCE 0.00273
+Epoch 10/20  train BCE 0.00053  val BCE 0.00257
+Epoch 11/20  train BCE 0.00042  val BCE 0.00242
+Epoch 12/20  train BCE 0.00036  val BCE 0.00201
+Epoch 13/20  train BCE 0.00031  val BCE 0.00207
+Epoch 14/20  train BCE 0.00027  val BCE 0.00187
+Epoch 15/20  train BCE 0.00025  val BCE 0.00193
+Epoch 16/20  train BCE 0.00023  val BCE 0.00207
+Epoch 17/20  train BCE 0.00020  val BCE 0.00178
+Epoch 18/20  train BCE 0.00018  val BCE 0.00169
+Epoch 19/20  train BCE 0.00017  val BCE 0.00159
+Epoch 20/20  train BCE 0.00015  val BCE 0.00189
+{'game': 'Freeway', 'seed': 17, 'train_frames': 101404, 'validation_frames': 11068, 'exact_frames': 8693, 'exact_frame_accuracy': 0.7854174195880015, 'positive_pixel_f1': 0.9920603625590144, 'bce': np.float64(0.001584648800870983), 'sha256': '9fb9b223edf85d5af091e5599988f37969aa6faeec812752079c02a40fed28d3'}

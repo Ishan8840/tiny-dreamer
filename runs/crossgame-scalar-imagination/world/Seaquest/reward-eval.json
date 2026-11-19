@@ -1,0 +1,20 @@
+{
+  "1": {
+    "reward_mse": 0.00607900219105975,
+    "baseline_mse": 0.005329093382275367,
+    "scoring_mse": 0.9642699157798683,
+    "zero_mse": 0.0009210386810578806,
+    "terminal_bce": 0.05549291476064229,
+    "samples": 8808,
+    "scoring_samples": 91
+  },
+  "3": {
+    "reward_mse": 0.021561624017160424,
+    "baseline_mse": 0.01648182942014877,
+    "scoring_mse": 0.9278730736537413,
+    "zero_mse": 0.006327559156339249,
+    "terminal_bce": 0.1357119624050292,
+    "samples": 8930,
+    "scoring_samples": 264
+  }
+}

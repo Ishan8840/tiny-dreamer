@@ -27,7 +27,7 @@ def learn(agent, actor_opt, critic_opt, states, actions, targets, valid, method,
         return jnp.take_along_axis(lp, actions[..., None], axis=-1)[..., 0]
     old_chosen = select(behavior)
     def mean(x):
-        return jnp.where(valid, x, 0.).sum() / valid.sum()
+        return (jnp.where(valid != 0, x, 0.) * valid).sum() / valid.sum()
     def actor_loss(actor):
         lp = jax.nn.log_softmax(actor(states))
         chosen = select(lp)
@@ -126,7 +126,9 @@ def run(args, model, env, params):
     best = -np.inf
     with (args.output/'validation.csv').open('w') as f:
         writer = csv.writer(f)
-        writer.writerow(['actions','optimizer_updates','mean_return','actor_loss','critic_mse','entropy','noop','left','right'])
+        action_names = ("noop", "left", "up", "right", "down", "fire")
+        frequency_names = [action_names[int(i)] for i in env.action_set]
+        writer.writerow(['actions','optimizer_updates','mean_return','actor_loss','critic_mse','entropy',*frequency_names])
         for epoch in range(args.epochs+1):
             metrics = []
             target = epoch * interval
@@ -143,7 +145,7 @@ def run(args, model, env, params):
                 updates += 4 if method == "ppo" else 1
                 metrics.append(m)
             score = float(policy_returns(agent.actor,encoder,env,params,eval_key,args.eval_episodes).mean())
-            summary = np.mean(metrics,axis=0) if metrics else ['']*6
+            summary = np.mean(metrics,axis=0) if metrics else ['']*(3 + len(frequency_names))
             if metrics and not np.isfinite(summary).all():
                 raise FloatingPointError(f"Nonfinite metrics at {actions} actions")
             writer.writerow([actions,updates,score,*summary])

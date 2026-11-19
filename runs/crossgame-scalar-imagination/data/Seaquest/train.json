@@ -1,0 +1,9 @@
+{
+  "episodes": 10000,
+  "transitions": 282046,
+  "eligible_episodes": 4680,
+  "positive_rewards": 977,
+  "max_reward": 2.0,
+  "natural_terminals": 10000,
+  "collection_seed": 71017
+}

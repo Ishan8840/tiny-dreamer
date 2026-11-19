@@ -1,0 +1,11 @@
+{
+  "game": "Seaquest",
+  "seed": 17,
+  "train_frames": 101404,
+  "validation_frames": 11068,
+  "exact_frames": 9357,
+  "exact_frame_accuracy": 0.8454101915431875,
+  "positive_pixel_f1": 0.9896965821075819,
+  "bce": 0.0009739744464818254,
+  "sha256": "e43bdcccc14233880092bce147deb3f00060a300467eeeb67348c8a3a281d0f5"
+}

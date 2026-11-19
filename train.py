@@ -454,9 +454,7 @@ def lambda_returns(rewards, discounts, next_values, trace_decay):
     return targets
 
 
-@nnx.jit(static_argnames=("horizon", "denoising_steps"))
-def actor_critic_update(agent, optimizer, dynamics, history, past_actions, key, horizon,
-                        denoising_steps, gamma, trace_decay, entropy_scale):
+def imagined_batch(agent, dynamics, history, past_actions, keys, denoising_steps, gamma, trace_decay):
     def imagine(carry, step_key):
         history, past_actions = carry
         action_key, noise_key = jax.random.split(step_key)
@@ -471,13 +469,30 @@ def actor_critic_update(agent, optimizer, dynamics, history, past_actions, key, 
         return (next_history, actions[:, 1:]), transition
 
     (last_history, _), (states, actions, rewards, discounts) = jax.lax.scan(
-        imagine, (history, past_actions), jax.random.split(key, horizon))
+        imagine, (history, past_actions), keys)
     bootstrap_states = jnp.concatenate((states[1:], policy_state(last_history)[None]), axis=0)
     next_values = agent.critic(bootstrap_states)[..., 0]
     targets = jax.lax.stop_gradient(lambda_returns(rewards, discounts, next_values, trace_decay))
     weights = jnp.cumprod(jnp.concatenate((jnp.ones_like(discounts[:1]), discounts[:-1])), axis=0)
+    return states, actions, targets, weights
 
-    return policy_update(agent, optimizer, states, actions, targets, weights, entropy_scale)
+
+@nnx.jit(static_argnames=("horizon", "denoising_steps"))
+def actor_critic_update(agent, optimizer, dynamics, history, past_actions, key, horizon,
+                        denoising_steps, gamma, trace_decay, entropy_scale):
+    batch = imagined_batch(agent, dynamics, history, past_actions, jax.random.split(key, horizon),
+                           denoising_steps, gamma, trace_decay)
+    return policy_update(agent, optimizer, *batch, entropy_scale)
+
+
+@nnx.jit(static_argnames=("horizon", "denoising_steps"))
+def imagined_ppo_update(agent, actor_opt, critic_opt, dynamics, history, past_actions, key, horizon,
+                        denoising_steps, gamma, trace_decay, entropy_scale):
+    from policy_ablation import learn
+    # Match the noise and sampling keys for shared steps when comparing horizons.
+    keys = jax.vmap(lambda i: jax.random.fold_in(key, i))(jnp.arange(horizon))
+    batch = imagined_batch(agent, dynamics, history, past_actions, keys, denoising_steps, gamma, trace_decay)
+    return learn(agent, actor_opt, critic_opt, *batch, "ppo", entropy_scale)[:2]
 
 
 def policy_update(agent, optimizer, states, actions, targets, weights, entropy_scale):
@@ -531,7 +546,16 @@ def train_actor_critic(args, model, env, params, transform):
     rngs = nnx.Rngs(init_key)
     agent = nnx.Dict(actor=Actor(rngs, env.action_space(params).n, input_dim),
                      critic=Critic(rngs, input_dim))
-    optimizer = nnx.Optimizer(agent, transform, wrt=nnx.Param)
+    ppo = args.policy_method == "ppo"
+    if ppo:
+        actor_tx = (optax.adam(args.actor_learning_rate) if args.optimizer == "adam" else
+                    optax.adamw(args.actor_learning_rate, weight_decay=args.weight_decay))
+        optimizers = (nnx.Optimizer(agent.actor, actor_tx, wrt=nnx.Param),
+                      nnx.Optimizer(agent.critic, transform, wrt=nnx.Param))
+        update = imagined_ppo_update
+    else:
+        optimizers = (nnx.Optimizer(agent, transform, wrt=nnx.Param),)
+        update = actor_critic_update
     best = -np.inf
     stale = 0
     for epoch in range(args.epochs):
@@ -539,14 +563,16 @@ def train_actor_critic(args, model, env, params, transform):
         for _ in range(args.steps_per_epoch):
             batch = replay.sample_batch(args.batch_size, args.context)
             train_key, key = jax.random.split(train_key)
-            losses.append(actor_critic_update(
-                agent, optimizer, model.dynamics, batch["observations"][:, :-1],
+            losses.append(update(
+                agent, *optimizers, model.dynamics, batch["observations"][:, :-1],
                 batch["actions"][:, :-1], key, args.imagination_horizon, args.denoising_steps,
                 args.discount, args.lambda_return, args.entropy_scale))
         returns = policy_returns(agent.actor, encoder, env, params, eval_key, args.eval_episodes)
         score = float(returns.mean())
         actor_loss, critic_loss = np.mean(losses, axis=0)
-        print(f"Step {(epoch + 1) * args.steps_per_epoch}  actor loss {actor_loss:.5f}"
+        if not np.isfinite([actor_loss, critic_loss, score]).all():
+            raise FloatingPointError("Nonfinite imagined policy training metrics")
+        print(f"Step {(epoch + 1) * args.steps_per_epoch * (4 if ppo else 1)}  actor loss {actor_loss:.5f}"
               f"  critic MSE {critic_loss:.5f}  real mean return {score:.4f}", flush=True)
         if score > best:
             save_weights(agent, args.output)
@@ -665,12 +691,15 @@ def main():
         args.batch_size = 32 if real_game else BATCH_SIZE
     if args.actor_learning_rate is not None and (not np.isfinite(args.actor_learning_rate) or args.actor_learning_rate <= 0):
         parser.error("--actor-learning-rate must be finite and positive")
-    if real_game:
+    if args.train == "actor-critic" and args.policy_method == "ppo":
+        if args.actor_learning_rate is None:
+            args.actor_learning_rate = 1e-4
+    elif real_game:
         args.policy_method = args.policy_method or "ppo"
         if args.actor_learning_rate is None:
             args.actor_learning_rate = 1e-4 if args.policy_method == "ppo" else args.learning_rate
     elif args.policy_method or args.actor_learning_rate is not None:
-        parser.error("real-game policy options require --train real-actor-critic")
+        parser.error("use --train real-actor-critic, or --train actor-critic --policy-method ppo for imagination")
     if args.train in ("actor-critic", "real-actor-critic"):
         if args.train == "actor-critic" and not args.model_checkpoint:
             parser.error("actor-critic requires --model-checkpoint with trained reward and terminal heads")
