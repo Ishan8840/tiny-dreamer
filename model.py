@@ -129,15 +129,28 @@ class DynamicsModel(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim=64, d_model=128, n_heads=4):
         self.latent_emb = nnx.Linear(latent_dim, d_model, rngs=rngs)
         self.action_emb = nnx.Embed(num_embeddings=action_dim, features=d_model, rngs=rngs)
+        self.noise_emb = nnx.Linear(1, d_model, rngs=rngs)
+        self.step_emb = nnx.Linear(1, d_model, rngs=rngs)
 
-        self.t1 = TransformerBlock(d_model, n_heads)
-        self.t2 = TransformerBlock(d_model, n_heads)
+        self.blocks = [TransformerBlock(rngs, d_model, n_heads) for _ in range(2)]
 
-        self.f1 = nnx.Linear(d_model, latent_dim)
+        self.out_proj = nnx.Linear(d_model, latent_dim, rngs=rngs)
 
-    def __call__(self, history_latents, history_actions, noisy_latent, noise_level, step_size,):
+    def __call__(self, history_latents, history_actions, noisy_latent, noise_level, step_size):
         x = self.latent_emb(history_latents) + self.action_emb(history_actions)
 
-        T = history_latents.shape[1]
-        positions = jnp.arange(T)
-        x = x + self.pos_emb(positions)[None, :, :]
+        tau_emb = self.noise_emb(noise_level[:, None])
+        step_emb = self.step_emb(step_size[:, None])
+
+        future_token = self.latent_emb(noisy_latent) + tau_emb + step_emb
+        future_token = future_token[:, None, :]
+
+        x = jnp.concatenate([x, future_token], axis=1)
+
+        for block in self.blocks:
+            x = block(x)
+
+        future_hidden = x[:, -1, :]
+        predicted_clean = self.out_proj(future_hidden)
+
+        return predicted_clean
