@@ -312,8 +312,8 @@ def denoise_next(dynamics, history, actions, noise, denoising_steps):
 
 class Actor(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim):
-        self.f1 = nnx.Linear(latent_dim, 256, rngs=rngs)
-        self.f2 = nnx.Linear(256, 128, rngs=rngs)
+        self.f1 = nnx.Linear(latent_dim, 128, rngs=rngs)
+        self.f2 = nnx.Linear(128, 128, rngs=rngs)
         self.f3 = nnx.Linear(128, action_dim, rngs=rngs)
 
     def __call__(self, x):
@@ -334,8 +334,8 @@ def return_bins():
 
 class Critic(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, latent_dim):
-        self.f1 = nnx.Linear(latent_dim, 256, rngs=rngs)
-        self.f2 = nnx.Linear(256, 128, rngs=rngs)
+        self.f1 = nnx.Linear(latent_dim, 128, rngs=rngs)
+        self.f2 = nnx.Linear(128, 128, rngs=rngs)
         self.f3 = nnx.Linear(128, VALUE_BINS, kernel_init=nnx.initializers.zeros_init(), rngs=rngs)
 
     def logits(self, x):

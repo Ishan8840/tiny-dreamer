@@ -1,0 +1,13 @@
+{
+  "episodes": 10000,
+  "scoring_episodes": 3373,
+  "transitions": 667795,
+  "pickups": 5067,
+  "eligible_windows": 518228,
+  "endpoint_pickups": 4973,
+  "windows_containing_pickup": 70549,
+  "episode_uniform_probability": 0.006940950764587455,
+  "filtered_windows": 19892,
+  "filtered_positive": 4973,
+  "filter_seed": 903
+}

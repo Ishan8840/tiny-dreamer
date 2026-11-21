@@ -1,0 +1,10 @@
+{
+  "episodes": 256,
+  "scoring_episodes": 178,
+  "coins": 387,
+  "steps": 37268,
+  "action_sensitive_states": 1947,
+  "actor_pickup_fraction": 0.19876733422279358,
+  "uniform_pickup_fraction": 0.23379558324813843,
+  "reward_greedy_pickup_fraction": 0.3415511042629687
+}

@@ -205,35 +205,65 @@ def save_weights(model, directory):
     temporary.replace(directory / "best.msgpack")
 
 
-def shortcut_loss(dynamics, latents, actions, key):
-    history = latents[:, :-1]
-    target = jax.lax.stop_gradient(latents[:, -1])
-    noisy, t, d = sample_training_inputs(target, key)
-    predicted = dynamics(history, actions, noisy, t, d)
-    return dynamics_loss(history, actions, noisy, t, d, predicted, target, dynamics, D_MIN)
+DEFAULT_DENOISING_STEPS = 4
 
 
-def joint_loss(model, obs, actions, key, dynamics_weight):
+def rollout_steps(dynamics, latents, actions, key, horizon, denoising_steps):
+    context = actions.shape[1] - horizon + 1
+    if context < 1 or horizon < 1 or latents.shape[1] != actions.shape[1] + 1:
+        raise ValueError("A rollout needs context + horizon frames and one fewer action")
+    history = latents[:, :context]
+    for step in range(horizon):
+        window = actions[:, step:step + context]
+        target = latents[:, context + step]
+        yield history, window, target
+        if step + 1 < horizon:
+            noise = jax.random.normal(jax.random.fold_in(key, step), target.shape)
+            prediction = denoise_next(dynamics, history, window, noise, denoising_steps)
+            history = jnp.concatenate((history[:, 1:], prediction[:, None]), axis=1)
+
+
+def rollout_loss(dynamics, latents, actions, key, horizon, denoising_steps, outcomes=None):
+    shortcut = event = 0.
+    rollout_key, loss_key = jax.random.split(key)
+    for step, (history, window, target) in enumerate(
+            rollout_steps(dynamics, latents, actions, rollout_key, horizon, denoising_steps)):
+        target = jax.lax.stop_gradient(target)
+        noise_key = key if horizon == 1 else jax.random.fold_in(loss_key, step)
+        noisy, t, d = sample_training_inputs(target, noise_key)
+        predicted = dynamics(history, window, noisy, t, d)
+        shortcut += dynamics_loss(history, window, noisy, t, d, predicted, target, dynamics, D_MIN)
+        if outcomes is not None:
+            labels = outcomes[:, step] if outcomes.ndim == 3 else outcomes
+            event += outcome_metrics(dynamics, history, window, labels)[0]
+    return shortcut / horizon, event / horizon
+
+
+def shortcut_loss(dynamics, latents, actions, key, horizon=1, denoising_steps=DEFAULT_DENOISING_STEPS):
+    return rollout_loss(dynamics, latents, actions, key, horizon, denoising_steps)[0]
+
+
+def joint_loss(model, obs, actions, key, dynamics_weight, horizon=1, denoising_steps=DEFAULT_DENOISING_STEPS):
     encoder, decoder = model.tokenizer.layers
     latents = encoder(obs.astype(jnp.float32))
     reconstruction = reconstruction_loss(decoder(latents), obs)
-    prediction = shortcut_loss(model.dynamics, latents, actions, key)
+    prediction = shortcut_loss(model.dynamics, latents, actions, key, horizon, denoising_steps)
     return reconstruction + dynamics_weight * prediction, (reconstruction, prediction)
 
 
-@nnx.jit
-def update_step(model, optimizer, obs, actions, key, dynamics_weight):
+@nnx.jit(static_argnames=("horizon", "denoising_steps"))
+def update_step(model, optimizer, obs, actions, key, dynamics_weight, horizon=1, denoising_steps=DEFAULT_DENOISING_STEPS):
     (loss, (rec, dyn)), grads = nnx.value_and_grad(joint_loss, has_aux=True)(
-        model, obs, actions, key, dynamics_weight
+        model, obs, actions, key, dynamics_weight, horizon, denoising_steps
     )
     optimizer.update(model, grads)
     return loss, rec, dyn
 
 
-@nnx.jit
-def frozen_update_step(dynamics, optimizer, latents, actions, key, dynamics_weight):
+@nnx.jit(static_argnames=("horizon", "denoising_steps"))
+def frozen_update_step(dynamics, optimizer, latents, actions, key, dynamics_weight, horizon=1, denoising_steps=DEFAULT_DENOISING_STEPS):
     def loss_fn(net):
-        return dynamics_weight * shortcut_loss(net, latents, actions, key)
+        return dynamics_weight * shortcut_loss(net, latents, actions, key, horizon, denoising_steps)
 
     loss, grads = nnx.value_and_grad(loss_fn)(dynamics)
     optimizer.update(dynamics, grads)
@@ -245,19 +275,21 @@ def encode_frames(encoder, observations):
     return encoder(observations.astype(jnp.float32))
 
 
-DEFAULT_DENOISING_STEPS = 4
-
-
-@nnx.jit(static_argnames=("denoising_steps",))
-def evaluate(model, obs, actions, key, dynamics_weight, denoising_steps=DEFAULT_DENOISING_STEPS):
+@nnx.jit(static_argnames=("denoising_steps", "horizon"))
+def evaluate(model, obs, actions, key, dynamics_weight, denoising_steps=DEFAULT_DENOISING_STEPS, horizon=1):
     loss_key, rollout_key = jax.random.split(key)
-    loss, (rec, dyn) = joint_loss(model, obs, actions, loss_key, dynamics_weight)
+    loss, (rec, dyn) = joint_loss(model, obs, actions, loss_key, dynamics_weight, horizon, denoising_steps)
     encoder, decoder = model.tokenizer.layers
-    history = encoder(obs[:, :-1].astype(jnp.float32))
-    noise = jax.random.normal(rollout_key, history[:, -1].shape)
-    prediction = denoise_next(model.dynamics, history, actions, noise, denoising_steps)
-    next_frame_bce = reconstruction_loss(decoder(prediction), obs[:, -1])
-    return loss, rec, dyn, next_frame_bce
+    context = actions.shape[1] - horizon + 1
+    history = encoder(obs[:, :context].astype(jnp.float32))
+    bce = 0.
+    for step in range(horizon):
+        noise_key = rollout_key if horizon == 1 else jax.random.fold_in(rollout_key, step)
+        noise = jax.random.normal(noise_key, history[:, -1].shape)
+        prediction = denoise_next(model.dynamics, history, actions[:, step:step + context], noise, denoising_steps)
+        bce += reconstruction_loss(decoder(prediction), obs[:, context + step])
+        history = jnp.concatenate((history[:, 1:], prediction[:, None]), axis=1)
+    return loss, rec, dyn, bce / horizon
 
 
 def make_replay(episodes, context, seed):
@@ -315,11 +347,10 @@ def outcome_update(dynamics, optimizer, history, actions, targets, param_filter=
 evaluate_outcomes = nnx.jit(outcome_metrics)
 
 
-@nnx.jit
-def dynamics_outcome_update(dynamics, optimizer, latents, actions, targets, key, weight):
+@nnx.jit(static_argnames=("horizon", "denoising_steps"))
+def dynamics_outcome_update(dynamics, optimizer, latents, actions, targets, key, weight, horizon=1, denoising_steps=DEFAULT_DENOISING_STEPS):
     def objective(net):
-        event_loss, _ = outcome_metrics(net, latents[:, :-1], actions, targets)
-        shortcut = shortcut_loss(net, latents, actions, key)
+        shortcut, event_loss = rollout_loss(net, latents, actions, key, horizon, denoising_steps, targets)
         return event_loss + weight * shortcut, event_loss
 
     (_, event_loss), grads = nnx.value_and_grad(objective, has_aux=True)(dynamics)
@@ -327,19 +358,31 @@ def dynamics_outcome_update(dynamics, optimizer, latents, actions, targets, key,
     return event_loss
 
 
-def outcome_validation(dynamics, episodes, context, batch_size):
-    # Score each eligible transition exactly once, including the last action.
+@nnx.jit(static_argnames=("horizon", "denoising_steps"))
+def evaluate_rollout_outcomes(dynamics, latents, actions, targets, key, horizon, denoising_steps):
+    metrics = [outcome_metrics(dynamics, history, window, targets[:, step])[1]
+               for step, (history, window, _) in enumerate(
+                   rollout_steps(dynamics, latents, actions, key, horizon, denoising_steps))]
+    losses, counts, mses = zip(*metrics)
+    return jnp.mean(jnp.stack(losses), axis=0), sum(counts), jnp.mean(jnp.stack(mses))
+
+
+def outcome_validation(dynamics, episodes, context, batch_size, horizon=1, denoising_steps=DEFAULT_DENOISING_STEPS):
     losses = np.zeros(2)
     squared_error = 0.
     counts = np.zeros((3, 2), dtype=np.int64)
-    windows = [(ep, start) for ep in episodes for start in range(len(ep["actions"]) - context + 1)]
+    length = context + horizon - 1
+    windows = [(ep, start) for ep in episodes for start in range(len(ep["actions"]) - length + 1)]
     for offset in range(0, len(windows), batch_size):
         group = windows[offset:offset + batch_size]
-        history = np.stack([ep["observations"][s:s + context] for ep, s in group])
-        actions = np.stack([ep["actions"][s:s + context] for ep, s in group])
-        targets = np.array([(ep["rewards"][s + context - 1], ep["terminals"][s + context - 1])
-                            for ep, s in group], dtype=np.float32)
-        _, (batch_losses, batch_counts, mse) = evaluate_outcomes(dynamics, history, actions, targets)
+        latents = np.stack([ep["observations"][s:s + length + 1] for ep, s in group])
+        actions = np.stack([ep["actions"][s:s + length] for ep, s in group])
+        targets = np.stack([np.stack((ep["rewards"][s + context - 1:s + length],
+                                      ep["terminals"][s + context - 1:s + length]), axis=-1)
+                            for ep, s in group]).astype(np.float32)
+        batch_losses, batch_counts, mse = evaluate_rollout_outcomes(
+            dynamics, latents, actions, targets, jax.random.fold_in(jax.random.key(0), offset),
+            horizon, denoising_steps)
         losses += np.asarray(batch_losses) * len(group)
         squared_error += float(mse) * len(group)
         counts += np.asarray(batch_counts)
@@ -360,22 +403,23 @@ def train_outcomes(args, model, transform, replay, val, train_key):
     joint = args.train == "dynamics-outcomes"
     param_filter = is_head_param if args.train == "heads" else is_outcome_param
     optimizer = nnx.Optimizer(dynamics, transform, wrt=nnx.Param if joint else param_filter)
+    horizon = args.training_horizon if joint else 1
     best = float("inf")
     stale = 0
     for epoch in range(args.epochs):
         train_losses = []
         for _ in range(args.steps_per_epoch):
-            batch = replay.sample_batch(args.batch_size, args.context)
-            targets = np.stack((batch["rewards"][:, -1], batch["terminals"][:, -1]), axis=-1)
+            batch = replay.sample_batch(args.batch_size, args.context + horizon - 1)
+            targets = np.stack((batch["rewards"][:, -horizon:], batch["terminals"][:, -horizon:]), axis=-1)
             if joint:
                 train_key, key = jax.random.split(train_key)
                 loss = dynamics_outcome_update(dynamics, optimizer, batch["observations"],
-                                               batch["actions"], targets, key, args.dynamics_weight)
+                                               batch["actions"], targets, key, args.dynamics_weight, horizon, args.denoising_steps)
             else:
                 loss = outcome_update(dynamics, optimizer, batch["observations"][:, :-1],
-                                      batch["actions"], targets, param_filter=param_filter)
+                                      batch["actions"], targets[:, 0], param_filter=param_filter)
             train_losses.append(loss)
-        losses, counts, n, mse = outcome_validation(dynamics, val.episodes, args.context, args.batch_size)
+        losses, counts, n, mse = outcome_validation(dynamics, val.episodes, args.context, args.batch_size, horizon, args.denoising_steps)
         total = losses.sum()
         print(f"Step {(epoch + 1) * args.steps_per_epoch} train outcome loss {np.mean(train_losses):.6f}"
               f" val loss {total:.6f} reward points MSE {mse:.6f} ({n} windows)", flush=True)
@@ -400,8 +444,9 @@ def train_dynamics(args, model, env, params, transform):
     data_key, train_key, val_key = jax.random.split(jax.random.key(args.seed), 3)
     episodes, _ = collect_episodes(env, params, data_key, args.episodes)
     train_eps, val_eps = episode_partitions(episodes, args.seed)
-    replay = make_replay(train_eps, args.context, args.seed)
-    val = make_replay(val_eps, args.context, args.seed + 1)
+    window = args.context + (0 if args.train in ("heads", "outcomes") else args.training_horizon - 1)
+    replay = make_replay(train_eps, window, args.seed)
+    val = make_replay(val_eps, window, args.seed + 1)
     outcome_mode = args.train in ("outcomes", "heads", "dynamics-outcomes")
     if freeze_tokenizer or outcome_mode:
         cache_latents(model.tokenizer.layers[0], replay)
@@ -417,25 +462,25 @@ def train_dynamics(args, model, env, params, transform):
     for epoch in range(args.epochs):
         train_metrics = []
         for _ in range(args.steps_per_epoch):
-            batch = replay.sample_batch(args.batch_size, args.context)
+            batch = replay.sample_batch(args.batch_size, window)
             train_key, step_key = jax.random.split(train_key)
             if freeze_tokenizer:
                 train_metrics.append(frozen_update_step(
                     model.dynamics, optimizer, batch["observations"], batch["actions"], step_key,
-                    args.dynamics_weight))
+                    args.dynamics_weight, args.training_horizon, args.denoising_steps))
             else:
                 train_metrics.append(update_step(
                     model, optimizer, batch["observations"], batch["actions"], step_key,
-                    args.dynamics_weight))
+                    args.dynamics_weight, args.training_horizon, args.denoising_steps))
         # Repeat the same held-out windows and noise draws for comparable epochs.
         val.rng = np.random.default_rng(args.seed + 1)
         val_metrics = []
         for index in range(args.val_batches):
-            batch = val.sample_batch(args.batch_size, args.context)
+            batch = val.sample_batch(args.batch_size, window)
             val_metrics.append(evaluate(
                 model, batch["observations"], batch["actions"],
                 jax.random.fold_in(val_key, index), args.dynamics_weight,
-                denoising_steps=args.denoising_steps,
+                denoising_steps=args.denoising_steps, horizon=args.training_horizon,
             ))
         avg = np.mean(train_metrics, axis=0)
         if freeze_tokenizer:
@@ -445,7 +490,7 @@ def train_dynamics(args, model, env, params, transform):
         vtotal, vrec, vdyn, next_bce = np.mean(val_metrics, axis=0)
         print(f"Step {(epoch + 1) * args.steps_per_epoch}  {train_summary}"
               f"  val total {vtotal:.5f} recon {vrec:.5f} dyn {vdyn:.5f}"
-              f" next-frame BCE {next_bce:.5f}", flush=True)
+              f" rollout BCE {next_bce:.5f}", flush=True)
         if next_bce < best:
             best = next_bce
             stale = 0
@@ -688,7 +733,8 @@ def main():
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW weight decay")
     parser.add_argument("--epochs", type=int, help="Defaults to 20 for tokenizer or 50 validation intervals for dynamics")
     dyn = parser.add_argument_group("dynamics and joint training")
-    dyn.add_argument("--context", type=int, default=16)
+    dyn.add_argument("--training-horizon", type=int, default=3, help="Autoregressive prediction steps for dynamics training")
+    dyn.add_argument("--context", type=int, default=5)
     dyn.add_argument("--steps-per-epoch", "--val-every", type=int, default=2000)
     dyn.add_argument("--val-batches", type=int, default=16)
     dyn.add_argument("--patience", type=int, default=5, help="Validation checks without improvement (0 disables)")
@@ -739,7 +785,7 @@ def main():
         parser.error("dynamics training needs pretrained weights: supply --tokenizer-checkpoint or --model-checkpoint")
     if args.train in ("outcomes", "heads", "dynamics-outcomes") and not args.model_checkpoint:
         parser.error("outcome training requires --model-checkpoint with pretrained dynamics")
-    if args.episodes < 2 or min(args.epochs, args.batch_size, args.context, args.steps_per_epoch, args.val_batches) < 1:
+    if args.episodes < 2 or min(args.epochs, args.batch_size, args.context, args.training_horizon, args.steps_per_epoch, args.val_batches) < 1:
         parser.error("require at least two episodes and positive training dimensions")
     if not np.isfinite(args.learning_rate) or args.learning_rate <= 0:
         parser.error("--learning-rate must be finite and positive")
