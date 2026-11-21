@@ -1,4 +1,4 @@
-# nanoDreamer
+# TinyDreamer
 
 Train a small world model to play MinAtar through imagination. A convolutional tokenizer encodes binary game frames. An action-conditioned transformer predicts future latents, reward points and episode termination. An actor chooses actions from the two most recent latents, and a distributional critic estimates their expected return.
 
@@ -59,7 +59,7 @@ For one-step world-model updates, set `--training-horizon 1 --reward-fraction 0.
 
 ## Where to make changes
 
-| File in `nanodreamer/` | Responsibility |
+| File in `tiny_dreamer/` | Responsibility |
 | --- | --- |
 | `config.py` | Configuration and CLI validation |
 | `model.py` | Tokenizer, transformer, prediction heads, actor and critic |

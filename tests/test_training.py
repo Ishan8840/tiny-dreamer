@@ -3,9 +3,9 @@ import unittest
 import jax.numpy as jnp
 import numpy as np
 
-from nanodreamer.actor_critic import lambda_returns
-from nanodreamer.config import parse_args
-from nanodreamer.data import make_replay
+from tiny_dreamer.actor_critic import lambda_returns
+from tiny_dreamer.config import parse_args
+from tiny_dreamer.data import make_replay
 
 
 class TrainingTests(unittest.TestCase):
@@ -47,7 +47,7 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(run.actor_learning_rate, 1e-4)
 
     def test_reward_sampling_recovers_natural_event_rate(self):
-        from nanodreamer.data import RewardSampler
+        from tiny_dreamer.data import RewardSampler
 
         episode = {
             "observations": np.arange(12),

@@ -227,7 +227,7 @@ def parse_args(argv=None):
     policy.add_argument(
         "--error-low",
         type=float,
-        help="Predicted error with 90% trust for soft weighting",
+        help="Predicted error with 90%% trust for soft weighting",
     )
 
     args = parser.parse_args(argv)

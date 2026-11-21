@@ -8,10 +8,10 @@ import jax
 import numpy as np
 from flax import nnx, serialization
 
-from nanodreamer.actor_critic import policy_returns
-from nanodreamer.checkpoints import restore_weights
-from nanodreamer.data import make_env
-from nanodreamer.model import Actor, Critic, WorldModel
+from tiny_dreamer.actor_critic import policy_returns
+from tiny_dreamer.checkpoints import restore_weights
+from tiny_dreamer.data import make_env
+from tiny_dreamer.model import Actor, Critic, WorldModel
 
 
 def main():
