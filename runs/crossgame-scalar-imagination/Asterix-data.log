@@ -1,8 +1,0 @@
-Asterix train 128 8484
-Asterix train 2176 145743
-Asterix train 4224 283643
-Asterix train 6272 417573
-Asterix train 8320 554475
-Asterix train {'episodes': 10000, 'transitions': 667795, 'eligible_episodes': 9819, 'positive_rewards': 5067, 'max_reward': 1.0, 'natural_terminals': 10000, 'collection_seed': 71017}
-Asterix val 128 8574
-Asterix val {'episodes': 1111, 'transitions': 74538, 'eligible_episodes': 1089, 'positive_rewards': 561, 'max_reward': 1.0, 'natural_terminals': 1111, 'collection_seed': 81017}

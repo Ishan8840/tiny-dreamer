@@ -41,15 +41,15 @@ def learn(agent, actor_opt, critic_opt, states, actions, targets, valid, method,
             objective = chosen * advantage
         return -mean(objective + entropy_scale * entropy)
     def critic_loss(critic):
-        return mean(jnp.square(critic(states)[..., 0] - targets))
+        return mean(critic.return_loss(critic.logits(states), targets))
     for _ in range(4 if method == "ppo" else 1):
         loss, gradient = nnx.value_and_grad(actor_loss)(agent.actor)
         actor_opt.update(agent.actor, gradient)
-        mse, gradient = nnx.value_and_grad(critic_loss)(agent.critic)
+        value_loss, gradient = nnx.value_and_grad(critic_loss)(agent.critic)
         critic_opt.update(agent.critic, gradient)
     entropy = mean(-(jnp.exp(behavior) * behavior).sum(-1))
     frequency = jnp.stack([mean(actions == i) for i in range(behavior.shape[-1])])
-    return jnp.concatenate((jnp.stack((loss, mse, entropy)), frequency))
+    return jnp.concatenate((jnp.stack((loss, value_loss, entropy)), frequency))
 
 
 @nnx.jit(static_argnames=("env", "method", "horizon"))
@@ -128,7 +128,7 @@ def run(args, model, env, params):
         writer = csv.writer(f)
         action_names = ("noop", "left", "up", "right", "down", "fire")
         frequency_names = [action_names[int(i)] for i in env.action_set]
-        writer.writerow(['actions','optimizer_updates','mean_return','actor_loss','critic_mse','entropy',*frequency_names])
+        writer.writerow(['actions','optimizer_updates','mean_return','actor_loss','critic_ce','entropy',*frequency_names])
         for epoch in range(args.epochs+1):
             metrics = []
             target = epoch * interval

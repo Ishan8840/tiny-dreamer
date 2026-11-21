@@ -1,8 +1,0 @@
-Seaquest train 128 3636
-Seaquest train 2176 61904
-Seaquest train 4224 118500
-Seaquest train 6272 175145
-Seaquest train 8320 233573
-Seaquest train {'episodes': 10000, 'transitions': 282046, 'eligible_episodes': 4680, 'positive_rewards': 977, 'max_reward': 2.0, 'natural_terminals': 10000, 'collection_seed': 71017}
-Seaquest val 128 3376
-Seaquest val {'episodes': 1111, 'transitions': 29442, 'eligible_episodes': 526, 'positive_rewards': 91, 'max_reward': 1.0, 'natural_terminals': 1111, 'collection_seed': 81017}

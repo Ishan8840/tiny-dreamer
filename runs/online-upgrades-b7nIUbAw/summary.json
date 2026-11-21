@@ -1,0 +1,21 @@
+{
+  "seeds": [
+    {
+      "seed": 0,
+      "heldout": 8.484375,
+      "cycle": 60,
+      "best_validation": 8.515625,
+      "mean_value": 3.6693315505981445,
+      "mean_return": 3.3194127082824707,
+      "mse": 2.6328201293945312,
+      "max_value": 5.4434285163879395,
+      "states": 25300,
+      "diagnostic_episode_mean": 8.484375,
+      "paired_score_matches": 256,
+      "video_score": 9.0
+    }
+  ],
+  "mean": 8.484375,
+  "offline_seed0": 4.4375,
+  "delta": 4.046875
+}

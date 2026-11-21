@@ -9,7 +9,8 @@ import jax.numpy as jnp
 
 from collect import collect_episodes
 from env import make_env
-from model import Actor, Critic, OUTCOME_COMPONENTS, WorldModel, denoise_next, make_tokenizer, restore_weights
+from model import (Actor, Critic, OUTCOME_COMPONENTS, REWARD_CLASSES, WorldModel,
+                   denoise_next, make_reward_head, make_tokenizer, restore_weights)
 from replay import ReplayBuffer
 
 
@@ -197,6 +198,8 @@ def train(observations, seed=0, *, validation_observations=None, model=None,
 
 def save_weights(model, directory):
     weights = nnx.to_pure_dict(nnx.state(model, nnx.Param))
+    if isinstance(model, WorldModel):
+        weights["_reward_target"] = model.dynamics.reward_target
     temporary = directory / "best.msgpack.tmp"
     temporary.write_bytes(serialization.to_bytes(weights))
     temporary.replace(directory / "best.msgpack")
@@ -283,13 +286,17 @@ def is_outcome_param(path, variable):
 
 
 def outcome_metrics(dynamics, history, actions, targets):
-    reward, terminal = dynamics.predict_outcomes(history, actions)
-    logits = jnp.stack((reward, terminal), axis=-1)
-    bce = optax.sigmoid_binary_cross_entropy(logits, targets).mean(axis=0)
-    predictions = logits >= 0
-    counts = jnp.stack(((predictions & targets).sum(axis=0), predictions.sum(axis=0),
-                        targets.sum(axis=0)))
-    return bce.sum(), (bce, counts)
+    reward, terminal = dynamics.outcome_outputs(history, actions)
+    points = targets[:, 0]
+    reward_ce = optax.softmax_cross_entropy_with_integer_labels(reward, points.astype(jnp.int32))
+    terminal_bce = optax.sigmoid_binary_cross_entropy(terminal, targets[:, 1])
+    losses = jnp.stack((reward_ce.mean(), terminal_bce.mean()))
+    predictions = jnp.stack((dynamics.scoring_logit(reward) >= 0, terminal >= 0), axis=-1)
+    events = targets > 0
+    counts = jnp.stack(((predictions & events).sum(axis=0), predictions.sum(axis=0),
+                        events.sum(axis=0)))
+    reward_mse = jnp.mean(jnp.square(dynamics.expected_reward(reward) - points))
+    return losses.sum(), (losses, counts, reward_mse)
 
 
 def is_head_param(path, variable):
@@ -323,22 +330,33 @@ def dynamics_outcome_update(dynamics, optimizer, latents, actions, targets, key,
 def outcome_validation(dynamics, episodes, context, batch_size):
     # Score each eligible transition exactly once, including the last action.
     losses = np.zeros(2)
+    squared_error = 0.
     counts = np.zeros((3, 2), dtype=np.int64)
     windows = [(ep, start) for ep in episodes for start in range(len(ep["actions"]) - context + 1)]
     for offset in range(0, len(windows), batch_size):
         group = windows[offset:offset + batch_size]
         history = np.stack([ep["observations"][s:s + context] for ep, s in group])
         actions = np.stack([ep["actions"][s:s + context] for ep, s in group])
-        targets = np.array([(ep["rewards"][s + context - 1] > 0, ep["terminals"][s + context - 1])
-                            for ep, s in group], dtype=bool)
-        _, (bce, batch_counts) = evaluate_outcomes(dynamics, history, actions, targets)
-        losses += np.asarray(bce) * len(group)
+        targets = np.array([(ep["rewards"][s + context - 1], ep["terminals"][s + context - 1])
+                            for ep, s in group], dtype=np.float32)
+        _, (batch_losses, batch_counts, mse) = evaluate_outcomes(dynamics, history, actions, targets)
+        losses += np.asarray(batch_losses) * len(group)
+        squared_error += float(mse) * len(group)
         counts += np.asarray(batch_counts)
-    return losses / len(windows), counts, len(windows)
+    return losses / len(windows), counts, len(windows), squared_error / len(windows)
 
 
 def train_outcomes(args, model, transform, replay, val, train_key):
     dynamics = model.dynamics
+    for buffer in (replay, val):
+        for episode in buffer.episodes:
+            r = episode["rewards"]
+            if not np.all((r >= 0) & (r < REWARD_CLASSES) & (r == np.floor(r))):
+                raise ValueError(f"Expected integer MinAtar rewards from 0 to {REWARD_CLASSES - 1}")
+    if dynamics.reward_target != "categorical_points":
+        dynamics.reward_head = make_reward_head(dynamics.reward_head.kernel.shape[0], nnx.Rngs(args.seed))
+        dynamics.reward_target = "categorical_points"
+        print("Initialized categorical points head for outcome training", flush=True)
     joint = args.train == "dynamics-outcomes"
     param_filter = is_head_param if args.train == "heads" else is_outcome_param
     optimizer = nnx.Optimizer(dynamics, transform, wrt=nnx.Param if joint else param_filter)
@@ -348,7 +366,7 @@ def train_outcomes(args, model, transform, replay, val, train_key):
         train_losses = []
         for _ in range(args.steps_per_epoch):
             batch = replay.sample_batch(args.batch_size, args.context)
-            targets = np.stack((batch["rewards"][:, -1] > 0, batch["terminals"][:, -1]), axis=-1)
+            targets = np.stack((batch["rewards"][:, -1], batch["terminals"][:, -1]), axis=-1)
             if joint:
                 train_key, key = jax.random.split(train_key)
                 loss = dynamics_outcome_update(dynamics, optimizer, batch["observations"],
@@ -357,17 +375,17 @@ def train_outcomes(args, model, transform, replay, val, train_key):
                 loss = outcome_update(dynamics, optimizer, batch["observations"][:, :-1],
                                       batch["actions"], targets, param_filter=param_filter)
             train_losses.append(loss)
-        bce, counts, n = outcome_validation(dynamics, val.episodes, args.context, args.batch_size)
-        total = bce.sum()
-        print(f"Step {(epoch + 1) * args.steps_per_epoch} train BCE {np.mean(train_losses):.6f}"
-              f" val BCE {total:.6f} ({n} windows)", flush=True)
-        for name, loss, (tp, predicted, positives) in zip(("reward", "terminal"), bce, counts.T):
-            print(f"  {name} BCE {loss:.6f}  precision {tp / predicted if predicted else float('nan'):.3f}"
+        losses, counts, n, mse = outcome_validation(dynamics, val.episodes, args.context, args.batch_size)
+        total = losses.sum()
+        print(f"Step {(epoch + 1) * args.steps_per_epoch} train outcome loss {np.mean(train_losses):.6f}"
+              f" val loss {total:.6f} reward points MSE {mse:.6f} ({n} windows)", flush=True)
+        for name, loss, (tp, predicted, positives) in zip(("reward CE", "terminal BCE"), losses, counts.T):
+            print(f"  {name} {loss:.6f}  precision {tp / predicted if predicted else float('nan'):.3f}"
                   f"  recall {tp / positives if positives else float('nan'):.3f}"
                   f"  positives {positives}  predicted {predicted}", flush=True)
         if total < best:
             save_weights(model, args.output)
-            print(f"Saved best at step {(epoch + 1) * args.steps_per_epoch}, outcome BCE {total:.9g}", flush=True)
+            print(f"Saved best at step {(epoch + 1) * args.steps_per_epoch}, outcome loss {total:.9g}", flush=True)
             best = total
             stale = 0
         else:
@@ -461,11 +479,11 @@ def imagined_batch(agent, dynamics, history, past_actions, keys, denoising_steps
         state = policy_state(history)
         action = jax.random.categorical(action_key, agent.actor(state)).astype(past_actions.dtype)
         actions = jnp.concatenate((past_actions, action[:, None]), axis=1)
-        reward, terminal = dynamics.predict_outcomes(history, actions)
+        reward, terminal = dynamics.outcome_outputs(history, actions)
         noise = jax.random.normal(noise_key, history[:, -1].shape)
         next_z = denoise_next(dynamics, history, actions, noise, denoising_steps)
         next_history = jnp.concatenate((history[:, 1:], next_z[:, None]), axis=1)
-        transition = (state, action, jax.nn.sigmoid(reward), gamma * jax.nn.sigmoid(-terminal))
+        transition = (state, action, dynamics.expected_reward(reward), gamma * jax.nn.sigmoid(-terminal))
         return (next_history, actions[:, 1:]), transition
 
     (last_history, _), (states, actions, rewards, discounts) = jax.lax.scan(
@@ -497,13 +515,14 @@ def imagined_ppo_update(agent, actor_opt, critic_opt, dynamics, history, past_ac
 
 def policy_update(agent, optimizer, states, actions, targets, weights, entropy_scale):
     def loss_fn(net):
-        values = net.critic(states)[..., 0]
+        logits = net.critic.logits(states)
+        values = net.critic.value(logits)[..., 0]
         advantage = jax.lax.stop_gradient(targets - values)
         log_probs = jax.nn.log_softmax(net.actor(states))
         chosen = jnp.take_along_axis(log_probs, actions[..., None], axis=-1)[..., 0]
         entropy = -(jnp.exp(log_probs) * log_probs).sum(axis=-1)
         actor_loss = -(weights * (chosen * advantage + entropy_scale * entropy)).sum() / weights.sum()
-        critic_loss = (weights * jnp.square(targets - values)).sum() / weights.sum()
+        critic_loss = (weights * net.critic.return_loss(logits, targets)).sum() / weights.sum()
         return actor_loss + critic_loss, (actor_loss, critic_loss)
 
     (_, losses), grads = nnx.value_and_grad(loss_fn, has_aux=True)(agent)
@@ -573,7 +592,7 @@ def train_actor_critic(args, model, env, params, transform):
         if not np.isfinite([actor_loss, critic_loss, score]).all():
             raise FloatingPointError("Nonfinite imagined policy training metrics")
         print(f"Step {(epoch + 1) * args.steps_per_epoch * (4 if ppo else 1)}  actor loss {actor_loss:.5f}"
-              f"  critic MSE {critic_loss:.5f}  real mean return {score:.4f}", flush=True)
+              f"  critic CE {critic_loss:.5f}  real mean return {score:.4f}", flush=True)
         if score > best:
             save_weights(agent, args.output)
             best, stale = score, 0

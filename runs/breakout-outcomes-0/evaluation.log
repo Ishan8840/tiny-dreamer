@@ -1,3 +1,0 @@
-5 outcome arrays changed; 55 pretrained arrays identical
-['reward', 3000, 1042, 3958, np.float64(0.08984020804283277), np.int64(239), np.int64(13), np.int64(26), np.float64(0.9484126984126984), np.float64(0.9018867924528302), np.float64(0.9245647969052224)]
-['terminal', 3000, 1042, 3958, np.float64(0.15389485235225753), np.int64(1015), np.int64(97), np.int64(27), np.float64(0.9127697841726619), np.float64(0.974088291746641), np.float64(0.9424326833797586)]

@@ -163,6 +163,18 @@ class TransformerBlock(nnx.Module):
         return x + h
 
 
+# Ten rescue points plus up to two active friendly shots in default Seaquest.
+REWARD_CLASSES = 13
+
+
+def make_reward_head(width, rngs):
+    def sparse_bias(key, shape, dtype=jnp.float32):
+        return jnp.zeros(shape, dtype).at[0].set(7.)
+
+    return nnx.Linear(width, REWARD_CLASSES, kernel_init=nnx.initializers.zeros_init(),
+                      bias_init=sparse_bias, rngs=rngs)
+
+
 class DynamicsModel(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, action_dim, latent_dim=128, d_model=128, n_heads=4, qknorm=True,
                  swiglu=False, softcap=0.0):
@@ -175,7 +187,8 @@ class DynamicsModel(nnx.Module):
                                 for _ in range(2)])
 
         self.out_proj = nnx.Linear(d_model, latent_dim, rngs=rngs)
-        self.reward_head = nnx.Linear(d_model, 1, rngs=rngs)
+        self.reward_head = make_reward_head(d_model, rngs)
+        self.reward_target = "categorical_points"
         self.terminal_head = nnx.Linear(d_model, 1, rngs=rngs)
 
     def __call__(self, history_latents, history_actions, noisy_latent, noise_level, step_size):
@@ -192,7 +205,7 @@ class DynamicsModel(nnx.Module):
             x = block(x)
         return self.out_proj(x[:, -1])
 
-    def predict_outcomes(self, history_latents, history_actions):
+    def outcome_outputs(self, history_latents, history_actions):
         history = self.latent_emb(history_latents) + self.action_emb(history_actions)
         batch, _, width = history.shape
         agent_token = jnp.broadcast_to(self.agent_token[...], (batch, 1, width))
@@ -202,7 +215,27 @@ class DynamicsModel(nnx.Module):
             x = block(x)
 
         features = x[:, -1]
-        return self.reward_head(features)[:, 0], self.terminal_head(features)[:, 0]
+        return self.reward_head(features), self.terminal_head(features)[:, 0]
+
+    def expected_reward(self, output):
+        if self.reward_target == "event":
+            return jax.nn.sigmoid(output[..., 0])
+        if self.reward_target == "points":
+            return output[..., 0]
+        return jax.nn.softmax(output) @ jnp.arange(REWARD_CLASSES, dtype=output.dtype)
+
+    def scoring_logit(self, output):
+        if self.reward_target == "event":
+            return output[..., 0]
+        if self.reward_target == "points":
+            # Legacy regression checkpoints have no event distribution.
+            raise ValueError("A scalar points checkpoint cannot predict scoring probability")
+        return jax.scipy.special.logsumexp(output[..., 1:], axis=-1) - output[..., 0]
+
+    def predict_outcomes(self, history_latents, history_actions):
+        """Positive-reward and game-over logits used by the event evaluator."""
+        reward, terminal = self.outcome_outputs(history_latents, history_actions)
+        return self.scoring_logit(reward), terminal
 
 
 def make_tokenizer(rngs, channels, latent_dim=128):
@@ -220,9 +253,28 @@ OUTCOME_COMPONENTS = ("agent_token", "reward_head", "terminal_head")
 
 
 def restore_weights(model, path, *, require_outcomes=False):
+    saved = serialization.msgpack_restore(path.read_bytes())
     state = nnx.state(model, nnx.Param)
     template = nnx.to_pure_dict(state)
-    saved = serialization.msgpack_restore(path.read_bytes())
+    replacement_head = None
+    reward_head = None
+    if isinstance(model, WorldModel):
+        reward_params = saved["dynamics"].get("reward_head")
+        legacy = reward_params is not None and reward_params["bias"].shape == (1,)
+        reward_target = saved.pop("_reward_target", "event" if legacy else "categorical_points")
+        if reward_target not in (("event", "points") if legacy else ("categorical_points",)):
+            raise ValueError(f"Incompatible reward target {reward_target} in {path}")
+        width = 1 if legacy else REWARD_CLASSES
+        if model.dynamics.reward_head.bias.shape != (width,):
+            reward_head = nnx.Linear(model.dynamics.reward_head.kernel.shape[0], width, rngs=nnx.Rngs(0))
+            template["dynamics"]["reward_head"] = nnx.to_pure_dict(nnx.state(reward_head, nnx.Param))
+    # Actor-critic checkpoints predating the two-hot head store one output.
+    if isinstance(model, nnx.Dict) and isinstance(model.get("critic"), Critic):
+        kernel = saved.get("critic", {}).get("f3", {}).get("kernel")
+        if kernel is not None and kernel.shape in ((128, 1), (128, VALUE_BINS)):
+            if model.critic.f3.kernel.shape != kernel.shape:
+                replacement_head = nnx.Linear(128, kernel.shape[1], rngs=nnx.Rngs(0))
+                template["critic"]["f3"] = nnx.to_pure_dict(nnx.state(replacement_head, nnx.Param))
     expected = serialization.to_state_dict(template)
     if isinstance(model, WorldModel) and "dynamics" in saved and not require_outcomes:
         # Older world models predate the agent token and outcome heads.
@@ -236,6 +288,14 @@ def restore_weights(model, path, *, require_outcomes=False):
         if actual.shape != expected.shape:
             raise ValueError(f"Incompatible checkpoint: {actual.shape} vs {expected.shape}")
 
+    if replacement_head is not None:
+        model.critic.f3 = replacement_head
+        state = nnx.state(model, nnx.Param)
+    if isinstance(model, WorldModel):
+        if reward_head is not None:
+            model.dynamics.reward_head = reward_head
+            state = nnx.state(model, nnx.Param)
+        model.dynamics.reward_target = reward_target
     nnx.replace_by_pure_dict(state, jax.tree.map(jnp.asarray, restored))
     nnx.update(model, state)
 
@@ -264,15 +324,49 @@ class Actor(nnx.Module):
         return x
 
 
+VALUE_BINS = 255
+
+
+def return_bins():
+    positive = jnp.expm1(jnp.linspace(0.0, 20.0, VALUE_BINS // 2 + 1))
+    return jnp.concatenate((-positive[:0:-1], positive))
+
+
 class Critic(nnx.Module):
     def __init__(self, rngs: nnx.Rngs, latent_dim):
         self.f1 = nnx.Linear(latent_dim, 256, rngs=rngs)
         self.f2 = nnx.Linear(256, 128, rngs=rngs)
-        self.f3 = nnx.Linear(128, 1, rngs=rngs)
+        self.f3 = nnx.Linear(128, VALUE_BINS, kernel_init=nnx.initializers.zeros_init(), rngs=rngs)
 
-    def __call__(self, x):
+    def logits(self, x):
         x = jax.nn.silu(self.f1(x))
         x = jax.nn.silu(self.f2(x))
-        x = self.f3(x)
+        return self.f3(x)
 
-        return x
+    @staticmethod
+    def value(logits):
+        if logits.shape[-1] == 1:
+            return logits  # Legacy scalar checkpoint.
+        probs = jax.nn.softmax(logits.astype(jnp.float32))
+        mid = VALUE_BINS // 2
+        # Pair opposite bins before summation to avoid cancellation at initialization.
+        delta = probs[..., mid + 1:] - probs[..., :mid][..., ::-1]
+        return (delta * return_bins()[mid + 1:]).sum(axis=-1, keepdims=True)
+
+    def __call__(self, x):
+        return self.value(self.logits(x))
+
+    @staticmethod
+    def return_loss(logits, targets):
+        targets = jax.lax.stop_gradient(targets)
+        if logits.shape[-1] == 1:
+            return jnp.square(logits[..., 0] - targets)
+        bins = return_bins()
+        targets = jnp.clip(targets, bins[0], bins[-1])
+        hi = jnp.clip(jnp.searchsorted(bins, targets), 1, VALUE_BINS - 1)
+        lo = hi - 1
+        upper_weight = (targets - bins[lo]) / (bins[hi] - bins[lo])
+        logp = jax.nn.log_softmax(logits.astype(jnp.float32))
+        lower = jnp.take_along_axis(logp, lo[..., None], axis=-1)[..., 0]
+        upper = jnp.take_along_axis(logp, hi[..., None], axis=-1)[..., 0]
+        return -(1 - upper_weight) * lower - upper_weight * upper

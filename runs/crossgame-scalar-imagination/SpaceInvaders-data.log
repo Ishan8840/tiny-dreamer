@@ -1,8 +1,0 @@
-SpaceInvaders train 128 7221
-SpaceInvaders train 2176 119209
-SpaceInvaders train 4224 235901
-SpaceInvaders train 6272 355184
-SpaceInvaders train 8320 476547
-SpaceInvaders train {'episodes': 10000, 'transitions': 571124, 'eligible_episodes': 10000, 'positive_rewards': 41824, 'max_reward': 1.0, 'natural_terminals': 10000, 'collection_seed': 71017}
-SpaceInvaders val 128 7285
-SpaceInvaders val {'episodes': 1111, 'transitions': 65067, 'eligible_episodes': 1111, 'positive_rewards': 4670, 'max_reward': 1.0, 'natural_terminals': 1111, 'collection_seed': 81017}
