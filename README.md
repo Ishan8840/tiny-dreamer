@@ -1,64 +1,78 @@
-# nanoDreamer training
+# nanoDreamer
 
-`train.py` selects trainable components with `--train`. New dynamics models use QKNorm, an ungated SiLU feed-forward block, uncapped attention, and the one-frame shortcut objective.
+Train a small world model to play MinAtar through imagination. A convolutional tokenizer encodes binary game frames. An action-conditioned transformer predicts future latents, reward points and episode termination. An actor chooses actions from the two most recent latents, and a distributional critic estimates their expected return.
 
-| Mode | Parameters updated | Training objective | Best checkpoint selected by |
-|---|---|---|---|
-| `dynamics` (default) | Dynamics transformer | Shortcut loss on frozen encoder latents | Next-frame validation BCE |
-| `tokenizer` | Encoder and decoder | Frame reconstruction BCE | Reconstruction validation BCE |
-| `both` | Encoder, decoder, and dynamics | Reconstruction BCE + weighted shortcut loss | Next-frame validation BCE |
-| `outcomes` | Agent token, reward head, terminal head | Raw-points categorical CE + natural-terminal BCE | Sum of held-out outcome losses |
-| `heads` | Reward and terminal heads only, including their biases | Reward CE + terminal BCE | Sum of held-out outcome losses |
-| `dynamics-outcomes` | Dynamics transformer, agent token, reward and terminal heads | Weighted shortcut loss + reward CE + terminal BCE | Sum of held-out outcome losses |
-| `actor-critic` | Actor and critic | Entropy-regularized categorical policy gradient and two-hot value cross-entropy on imagined λ-returns | Mean real episode return |
-| `real-actor-critic` | Fresh actor and critic; frozen encoder | Clipped PPO policy loss and two-hot value cross-entropy on real transitions | Mean real episode return |
+## Installation
 
-```bash
-python train.py --train tokenizer --output runs/tokenizer
-python train.py --train dynamics --tokenizer-checkpoint runs/tokenizer/best.msgpack --output runs/dynamics
-python train.py --train outcomes --model-checkpoint runs/dynamics/best.msgpack --output runs/outcomes
-python train.py --train both --model-checkpoint runs/dynamics/best.msgpack --output runs/joint
-python train.py --train actor-critic --model-checkpoint runs/outcomes/best.msgpack --output runs/agent
-python train.py --train real-actor-critic --model-checkpoint runs/outcomes/best.msgpack --output runs/real-agent
+From the repository root, install the locked dependencies with Python 3.11 and uv.
+
+```sh
+uv sync --locked
+source .venv/bin/activate
 ```
 
-Each command takes a new output directory. Tokenizer mode writes standalone tokenizer weights. Dynamics and joint modes write full model weights, including the tokenizer. Loading weights starts a fresh optimizer.
+For a Linux machine with an NVIDIA GPU and a compatible CUDA 12 driver, install the CUDA plugin for the same JAX version into that environment.
 
-Outcome training loads a full pretrained world model and saves the full model with the fitted heads. Older checkpoints initialize the missing agent token and heads. Each label refers to the final recorded action in the context. A time limit ends collection while a natural game over supplies the terminal target. All five games use the same 13 reward classes (integer points 0–12), fitted separately in each world model. Validation reports expected-points MSE and event precision and recall. Outcome training from an older binary or scalar checkpoint initializes a fresh categorical reward head.
-
-World-model training uses five observed frames and predicts the next three autoregressively. Each prediction uses the recorded action and earlier predicted latents. Shortcut loss is averaged over all three horizons. In dynamics-outcomes mode the reward and terminal labels also follow each transition. Use `--training-horizon 1` for the earlier one-step objective.
-
-Breakout dynamics defaults are batch size 64, context 5, AdamW at 3e-4, and four denoising steps per evaluated frame. Training runs for up to 50 intervals of 2,000 updates, with early stopping after five validations without improvement. Tokenizer pretraining uses Adam for 20 epochs. Run `python train.py --help` for overrides.
-
-Actor–critic mode collects a fixed random-policy replay once, caches encoder latents and trains offline. Each sampled context ends at a real decision point. The actor and critic see the last two latents. The actor samples actions for five imagined transitions using four denoising steps each. Imagination uses the probability-weighted mean of the point classes. Older checkpoints retain their original binary or scalar reward interpretation during policy training. Continuation probability discounts the bootstrapped targets and weights both losses. Defaults are γ = 0.99, λ = 0.95 and entropy coefficient 0.001.
-
-Fresh critics predict 255 probabilities over symmetric exponential return bins spanning symexp(−20) to symexp(20). The scalar value used for advantages and bootstrapping is the probability-weighted mean in reward units. The loss interpolates each detached return target between adjacent bins and applies cross-entropy. Older scalar critic checkpoints load with their original value function.
-
-For imagined PPO, use `--train actor-critic --policy-method ppo` and set `--imagination-horizon` to the number of predicted transitions per replay start. This uses the real-game PPO objective and optimizer rates with cumulative continuation weighting. Each imagined batch produces four optimizer updates. To match the training budget of the earlier scalar-critic Breakout horizon experiment, use `--episodes 10000 --batch-size 32 --epochs 50 --steps-per-epoch 2000 --patience 0` with the frozen joint world-model checkpoint.
-
-Validation samples the policy in 64 real episodes with fixed random seeds, duplicating the initial frame for its first decision. Validation episodes stay outside replay. The best checkpoint contains `actor` and `critic` weights together. Keep the input world-model checkpoint alongside it for the encoder and dynamics.
-
-The real-game baseline is PPO with actor learning rate 1e-4 and critic learning rate 3e-4. The command above uses 32 environments, five transitions per rollout and four gradient passes, for 16 million real actions and 400,000 optimizer updates. It evaluates at initialization and every 320,000 real actions. The three selected policies averaged 15.15 points per held-out Breakout episode. The seed-2 checkpoint scored 16.50. [Per-seed results](runs/real-policy-grid/per-seed.csv) · [Reference checkpoint](runs/real-policy-grid/ppo-1e-4-s2/best.msgpack)
-
-Use `--policy-method a2c|ppo|reinforce|pmpo` with `--train real-actor-critic` for the real-game ablations. Set `--actor-learning-rate` independently of the critic's `--learning-rate`. The real-action budget remains batch size × real horizon × steps per epoch × epochs. Each run writes validation diagnostics, the highest-validation checkpoint and episode returns on 256 held-out games.
-
-A2C uses one advantage-weighted update per rollout. PPO takes four full-batch passes with clip width 0.2 and fixed behavior logits, advantages and value targets. REINFORCE fits a learned state baseline to discounted Monte Carlo returns from batches of episodes. Padded lanes are masked, and the last batch of each validation interval ends exactly at the action budget. PMPO uses the sign of the λ-return advantage, with equal weight on the positive and negative groups, zero advantage in the positive group, and zero contribution from an empty group. Its actor objective has no KL or entropy term.
-
-### Error-aware imagination
-
-Fit the rollout-error head against a frozen world checkpoint. Supply the corresponding actor–critic checkpoint to collect real episodes from that policy. Omitting the policy checkpoint uses random gameplay.
-
-```bash
-python train.py --train rollout-error --game Asterix --model-checkpoint "$WORLD" \
-  --policy-checkpoint "$POLICY" --imagination-horizon 5 --output runs/asterix-error
+```sh
+uv pip install "jax[cuda12]==$(python -c 'import jax; print(jax.__version__)')"
+python -c 'import jax; print(jax.devices())'
 ```
 
-The probe predicts mean squared error per latent coordinate at each imagined step. Its validation CSV groups predictions into four risk quartiles **within each depth** and reports actual latent error, missed rewards and invented rewards. Use the held-out diagnostics to select a threshold in latent-MSE units. Assign that value to `CUTOFF` before running the following command.
+## Train and evaluate
 
-```bash
-python train.py --train actor-critic --policy-method ppo --game Asterix --model-checkpoint "$WORLD" \
-  --error-checkpoint runs/asterix-error/best.msgpack --error-threshold "$CUTOFF" \
-  --imagination-horizon 5 --output runs/asterix-adaptive
+These short Breakout commands exercise the full pipeline. Each stage writes to a fresh directory. Increase the budgets for a trained agent.
+
+```sh
+python train.py --train tokenizer --output outputs/tokenizer \
+  --episodes 12 --epochs 1 --batch-size 8
+
+python train.py --train dynamics-outcomes --output outputs/world \
+  --tokenizer-checkpoint outputs/tokenizer/best.msgpack \
+  --episodes 12 --epochs 1 --steps-per-epoch 1 --batch-size 4
+
+python train.py --train online --output outputs/policy \
+  --model-checkpoint outputs/world/best.msgpack --episodes 12 \
+  --epochs 1 --collect-steps 32 --world-updates 1 --steps-per-epoch 1 \
+  --batch-size 4 --eval-episodes 4
+
+python evaluate.py --policy outputs/policy/best.msgpack --episodes 4
 ```
 
-The first rejected transition contributes zero policy and value loss. Earlier transitions bootstrap from the critic at the last trusted state. A fully rejected batch skips the optimizer update. The gate applies during imagined training. Real-game action selection uses the actor as usual.
+Set the same `--game` on each training command to train Asterix, Breakout, Freeway, Seaquest or SpaceInvaders. Evaluation reads the game from the saved configuration. Keep the policy directory together when moving it, including its tokenizer and configuration.
+
+## Training modes
+
+| Mode | What learns | Data and selection metric |
+| --- | --- | --- |
+| `tokenizer` | Encoder and decoder | Random gameplay, held-out reconstruction BCE |
+| `dynamics-outcomes` | Dynamics, reward and terminal heads | Frozen tokenizer, held-out reward and terminal loss |
+| `online` | Dynamics, outcome heads, actor and critic | Online and random replay for dynamics, imagined PPO for behavior, real-game return for selection |
+| `actor-critic` | Actor and critic | Fixed world model and replay, real-game return for selection. Use `--policy-method ppo` for PPO. |
+| `real-actor-critic` | Actor and critic | Real game transitions using a frozen encoder, real-game return for selection |
+| `dynamics` / `both` | Dynamics alone or with tokenizer | Shortcut prediction, with reconstruction in joint mode |
+| `heads` / `outcomes` | Outcome heads alone or with shared outcome features | Real reward points and natural game-over labels |
+| `rollout-error` | Latent error probe | Error of imagined predictions against held-out encoded observations |
+
+The default tokenizer has 64 latent dimensions. The world model uses five frames of context, three training targets and four denoising steps per predicted frame. In online mode each epoch collects `--collect-steps` real actions, takes `--world-updates` dynamics updates and trains on `--steps-per-epoch` imagined PPO batches. Each batch produces four optimizer updates. `--episodes` controls initial random collection. Policy validation uses separate real gameplay. Checkpoints contain weights, and loading a checkpoint starts a fresh optimizer.
+
+For one-step world-model updates, set `--training-horizon 1 --reward-fraction 0.25` to draw extra scoring transitions for the reward head. Importance weights recover the original replay distribution. For multi-step training, `--detach-rollout` stops gradients through the predicted inputs to later steps. An offline imagined policy can use a fitted error probe with `--error-checkpoint PATH --error-threshold HIGH`; adding `--error-low LOW` gives 90% trust at LOW and 50% at HIGH.
+
+## Where to make changes
+
+| File in `nanodreamer/` | Responsibility |
+| --- | --- |
+| `config.py` | Configuration and CLI validation |
+| `model.py` | Tokenizer, transformer, prediction heads, actor and critic |
+| `data.py` | Game creation, episode collection and replay windows |
+| `world_model_learning.py` | Tokenizer, shortcut and outcome losses |
+| `imagination.py` | Autoregressive imagined transitions |
+| `actor_critic.py` | Returns, policy losses and critic updates |
+| `training.py` | Training loops and model selection |
+| `rollout_error.py` | Error-probe fitting and calibration |
+| `checkpoints.py` | Parameter serialization and compatible weight loading |
+
+Run `python train.py --help` for all flags or `python -m unittest discover -s tests` for the regression tests.
+
+## License
+
+[MIT](LICENSE)

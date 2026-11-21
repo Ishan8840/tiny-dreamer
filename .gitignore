@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local runs and development tools
+outputs/
+runs/
+.ruff_cache/
+.pytest_cache/
+.codex/
+.agents/
+.aws/

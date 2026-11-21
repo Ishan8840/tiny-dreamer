@@ -1,5 +1,0 @@
-error: Request failed after 3 retries in 49.8s
-  cause: Failed to fetch: https://pypi.org/simple/six/
-  cause: error sending request for url (https://pypi.org/simple/six/)
-  cause: client error (Connect)
-  cause: operation timed out

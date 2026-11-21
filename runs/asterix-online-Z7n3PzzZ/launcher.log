@@ -1,6 +1,0 @@
-starting-world.msgpack: OK
-    episodes, _ = collect_episodes(env, params, data, 10000)
-seed 0 training Sat Nov 21 02:23:37 UTC 2026
-seed 0 evaluated Sat Nov 21 02:40:53 UTC 2026
-{"seeds": [{"seed": 0, "heldout": 1.51171875, "cycle": 64, "best_validation": 1.71875, "mean_value": 0.6306367516517639, "mean_return": 0.6242398619651794, "mse": 0.5326018333435059, "max_value": 1.2162775993347168, "states": 37268, "diagnostic_episode_mean": 1.51171875, "paired_score_matches": 256, "video_score": 0.0}], "mean": 1.51171875, "offline_seed0": 0.4609375, "delta": 1.05078125}
-complete Sat Nov 21 02:41:18 UTC 2026
