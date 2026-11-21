@@ -48,8 +48,10 @@ def imagined_batch(
         error_threshold,
         error_low,
     )
+
     bootstrap_states = jnp.concatenate((states[1:], last_state[None]), axis=0)
     next_values = agent.critic(bootstrap_states)[..., 0]
+
     if error_low is not None:
         rewards = trusted * rewards + (1 - trusted) * agent.critic(states)[..., 0]
         discounts = trusted * discounts
@@ -57,6 +59,7 @@ def imagined_batch(
         # The first rejected transition has return V(current), bootstrapping its predecessor.
         rewards = jnp.where(trusted, rewards, agent.critic(states)[..., 0])
         discounts = jnp.where(trusted, discounts, 0.0)
+
     targets = jax.lax.stop_gradient(
         lambda_returns(rewards, discounts, next_values, trace_decay)
     )
@@ -176,6 +179,7 @@ def policy_update(agent, optimizer, states, actions, targets, weights, entropy_s
         logits = net.critic.logits(states)
         values = net.critic.value(logits)[..., 0]
         advantage = jax.lax.stop_gradient(targets - values)
+
         log_probs = jax.nn.log_softmax(net.actor(states))
         chosen = jnp.take_along_axis(log_probs, actions[..., None], axis=-1)[..., 0]
         entropy = -(jnp.exp(log_probs) * log_probs).sum(axis=-1)
@@ -183,6 +187,7 @@ def policy_update(agent, optimizer, states, actions, targets, weights, entropy_s
             -(weights * (chosen * advantage + entropy_scale * entropy)).sum()
             / weights.sum()
         )
+
         critic_loss = (
             weights * net.critic.return_loss(logits, targets)
         ).sum() / weights.sum()
@@ -207,6 +212,7 @@ def policy_returns(actor, encoder, env, params, key, episodes):
         actions = jax.random.categorical(
             action_key, actor(jnp.concatenate((previous, current), axis=-1))
         )
+
         obs, next_states, reward, done, _ = jax.vmap(
             env.step_env, in_axes=(0, 0, 0, None)
         )(jax.random.split(step_key, episodes), env_states, actions, params)
@@ -247,16 +253,19 @@ def real_rollout(
         state = jnp.concatenate((previous, current), axis=-1)
         action = jax.random.categorical(action_key, agent.actor(state))
         batch = action.shape[0]
+
         obs, next_env, reward, done, _ = jax.vmap(
             env.step_env, in_axes=(0, 0, 0, None)
         )(jax.random.split(step_key, batch), env_states, action, params)
         terminal = jax.vmap(env.is_terminated, in_axes=(0, None))(next_env, params)
         done |= jax.vmap(env.is_truncated, in_axes=(0, None))(next_env, params)
+
         next_z = encoder(obs.astype(jnp.float32))
         next_value = agent.critic(jnp.concatenate((current, next_z), axis=-1))[..., 0]
         # Bootstrap at time limits, but never propagate a return across an episode reset.
         if bootstrap_timeouts:
             reward = reward + gamma * (done & ~terminal) * next_value
+
         reset_obs, reset_env = jax.vmap(env.reset, in_axes=(0, None))(
             jax.random.split(reset_key, batch), params
         )
@@ -307,6 +316,7 @@ def learn(
         lp = jax.nn.log_softmax(actor(states))
         chosen = select(lp)
         entropy = -(jnp.exp(lp) * lp).sum(axis=-1)
+
         if method == "pmpo":
             return pmpo_loss(chosen, advantage)
         if method == "ppo":
@@ -316,6 +326,7 @@ def learn(
             )
         else:
             objective = chosen * advantage
+
         return -mean(objective + entropy_scale * entropy)
 
     def critic_loss(critic):
@@ -324,8 +335,10 @@ def learn(
     for _ in range(4 if method == "ppo" else 1):
         loss, gradient = nnx.value_and_grad(actor_loss)(agent.actor)
         actor_opt.update(agent.actor, gradient)
+
         value_loss, gradient = nnx.value_and_grad(critic_loss)(agent.critic)
         critic_opt.update(agent.critic, gradient)
+
     entropy = mean(-(jnp.exp(behavior) * behavior).sum(-1))
     frequency = jnp.stack([mean(actions == i) for i in range(behavior.shape[-1])])
     return jnp.concatenate((jnp.stack((loss, value_loss, entropy)), frequency))
@@ -416,6 +429,7 @@ def episode_update(
     )
     z = encode_frames(encoder, obs)
     carry = (act_key, env_states, z, z)
+
     active = np.ones(batch, bool)
     chunks = []
     count = 0
@@ -431,7 +445,9 @@ def episode_update(
         count += int(masks.sum())
         chunks.append((states, actions, rewards, masks))
         active &= ~done.any(axis=0)
+
     arrays = [jnp.concatenate(xs) for xs in zip(*chunks)]
+
     # Bound the number of JIT specializations for ragged episode lengths.
     size = 1 << (arrays[0].shape[0] - 1).bit_length()
     arrays = [

@@ -82,6 +82,7 @@ def collect_episodes(env, params, key, num_episodes, scan_steps=8, *, policy=Non
         raise ValueError("num_episodes must be positive")
     if scan_steps < 1:
         raise ValueError("scan_steps must be positive")
+
     key, reset_key, rollout_key = jax.random.split(key, 3)
     reset_keys = jax.random.split(reset_key, num_episodes)
     obs, states = jax.vmap(env.reset, in_axes=(0, None))(reset_keys, params)
@@ -100,8 +101,10 @@ def collect_episodes(env, params, key, num_episodes, scan_steps=8, *, policy=Non
                 keys, act, move = jnp.moveaxis(
                     jax.vmap(lambda k: jax.random.split(k, 3))(keys), 1, 0
                 )
+
                 logits = actor(jnp.concatenate((previous, current), axis=-1))
                 actions = jax.vmap(jax.random.categorical)(act, logits)
+
                 obs, following, rewards, done, _ = jax.vmap(
                     env.step_env, in_axes=(0, 0, 0, None)
                 )(move, states, actions, params)
@@ -131,6 +134,7 @@ def collect_episodes(env, params, key, num_episodes, scan_steps=8, *, policy=Non
     actions, rewards, dones, terminals = [], [], [], []
     lengths = np.zeros(num_episodes, dtype=int)
     active = np.ones(num_episodes, dtype=bool)
+
     while active.any():
         (keys, states), transitions = block(env, params, keys, states, scan_steps)
         obs, action, reward, done, terminal = jax.device_get(transitions)
@@ -150,6 +154,8 @@ def collect_episodes(env, params, key, num_episodes, scan_steps=8, *, policy=Non
     rewards = np.concatenate(rewards)
     dones = np.concatenate(dones)
     terminals = np.concatenate(terminals)
+
+    # Trim each parallel trajectory at its own episode boundary.
     episodes = []
     for game, length in enumerate(lengths):
         episodes.append(
@@ -211,6 +217,7 @@ class ReplayBuffer:
         eligible = [ep for ep in self.episodes if len(ep["actions"]) >= seq_len]
         if not eligible:
             raise ValueError("No episodes long enough to sample")
+
         sequences = [self._sample_window(eligible, seq_len) for _ in range(batch_size)]
 
         return {
@@ -223,6 +230,7 @@ class ReplayBuffer:
 def episode_partitions(episodes, seed=0):
     if len(episodes) < 2:
         raise ValueError("A train/validation split requires at least two episodes")
+
     order = np.random.default_rng(seed).permutation(len(episodes))
     val_count = max(1, round(0.1 * len(episodes)))
     return [episodes[i] for i in order[val_count:]], [
@@ -260,6 +268,7 @@ def cache_latents(encoder, replay):
             for i in range(0, len(observations), 512)
         ]
     )
+
     offset = 0
     for ep in replay.episodes:
         end = offset + len(ep["observations"])
@@ -273,6 +282,7 @@ def collect_online_block(actor, encoder, env, params, carry, steps):
         key, state, prev, z = carry
         key, act, move, reset = jax.random.split(key, 4)
         a = jax.random.categorical(act, actor(jnp.concatenate((prev, z))[None])[0])
+
         obs, state, r, done, _ = env.step_env(move, state, a, params)
         term = env.is_terminated(state, params)
         done |= env.is_truncated(state, params)
@@ -297,6 +307,7 @@ class RewardSampler:
     def __init__(self, episodes, context):
         self.episodes = [ep for ep in episodes if len(ep["actions"]) >= context]
         self.context = context
+
         self.pools = []
         for positive in (False, True):
             endpoints, masses = [], []
@@ -305,6 +316,7 @@ class RewardSampler:
                 ends = np.flatnonzero(labels == positive) + context - 1
                 endpoints.append(ends)
                 masses.append(len(ends) / len(labels))
+
             # Replay chooses an episode uniformly, then a window within it.
             cumulative = np.cumsum(masses)
             prevalence = cumulative[-1] / len(self.episodes) if len(cumulative) else 0.0
@@ -318,6 +330,7 @@ class RewardSampler:
             counts = [0, size]
         elif self.pools[1][2] == 0:
             counts = [size, 0]
+
         for (endpoints, cumulative, prevalence), n in zip(self.pools, counts):
             if n == 0:
                 continue

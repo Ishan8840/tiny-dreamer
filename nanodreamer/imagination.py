@@ -26,14 +26,17 @@ def imagine(
         step_key, depth = step
         history, past_actions = carry
         action_key, noise_key = jax.random.split(step_key)
+
         state = policy_state(history)
         action = jax.random.categorical(action_key, agent.actor(state)).astype(
             past_actions.dtype
         )
         actions = jnp.concatenate((past_actions, action[:, None]), axis=1)
+
         features = dynamics.outcome_features(history, actions)
         reward = dynamics.reward_head(features)
         terminal = dynamics.terminal_head(features)[:, 0]
+
         noise = jax.random.normal(noise_key, history[:, -1].shape)
         next_z = denoise_next(dynamics, history, actions, noise, denoising_steps)
         next_history = jnp.concatenate((history[:, 1:], next_z[:, None]), axis=1)
@@ -43,6 +46,7 @@ def imagine(
             dynamics.expected_reward(reward),
             gamma * jax.nn.sigmoid(-terminal),
         )
+
         trust = jnp.ones_like(action, dtype=bool)
         if error_head is not None:
             error = error_head(features, next_z, depth)
@@ -51,6 +55,7 @@ def imagine(
             else:
                 scale = (error_threshold - error_low) / jnp.log(9.0)
                 trust = jax.nn.sigmoid((error_threshold - error) / scale)
+
         return (next_history, actions[:, 1:]), (*transition, trust)
 
     (last_history, _), transitions = jax.lax.scan(

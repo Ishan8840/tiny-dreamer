@@ -29,6 +29,7 @@ def load_probe(args, dynamics):
         raise ValueError(
             "Error probe requires its original game, world checkpoint and rollout settings"
         )
+
     head = RolloutErrorHead(nnx.Rngs(0), dynamics)
     restore_weights(head, path)
     return head
@@ -44,14 +45,17 @@ def probe_examples(dynamics, latents, actions, key, context, denoising_steps):
         features = dynamics.outcome_features(history, window)
         noise = jax.random.normal(jax.random.fold_in(key, depth), history[:, -1].shape)
         prediction = denoise_next(dynamics, history, window, noise, denoising_steps)
+
         target = latents[:, context + depth]
         error = jnp.mean(jnp.square(prediction - target), axis=-1)
+
         reward_output = dynamics.reward_head(features)
         event = (
             reward_output[:, 0] > 0.5
             if dynamics.reward_target == "points"
             else dynamics.scoring_logit(reward_output) >= 0
         )
+
         following = jnp.concatenate((history[:, 1:], prediction[:, None]), axis=1)
         return following, (features, prediction, error, event)
 
@@ -113,11 +117,13 @@ def fit_probe(args, dynamics, transform, replay, validation, key):
                 "real_reward_events",
             )
         )
+
         for epoch in range(args.epochs):
             for _ in range(args.steps_per_epoch):
                 key, step_key = jax.random.split(key)
                 features, predictions, errors, _, _ = examples(replay, step_key)
                 fit_step(head, optimizer, features, predictions, errors)
+
             validation.rng = np.random.default_rng(args.seed + 1)
             rows = []
             for i in range(args.val_batches):
@@ -128,12 +134,14 @@ def fit_probe(args, dynamics, transform, replay, validation, key):
                 rows.append(
                     (score_probe(head, features, predictions), actual, events, real)
                 )
+
             scores, actual, events, real = (
                 np.concatenate(col, axis=1) for col in zip(*rows)
             )
             mse = np.mean(np.square(scores - actual))
             if not np.isfinite(mse):
                 raise FloatingPointError("Nonfinite rollout-error validation loss")
+
             step = (epoch + 1) * args.steps_per_epoch
             for d, risk in enumerate(scores):
                 for q, idx in enumerate(np.array_split(np.argsort(risk), 4), 1):
@@ -153,6 +161,7 @@ def fit_probe(args, dynamics, transform, replay, validation, key):
                                 real[d, idx].sum(),
                             )
                         )
+
             print(f"Step {step}  validation error-head MSE {mse:.6g}", flush=True)
             if mse < best:
                 save_weights(head, args.output)

@@ -5,18 +5,14 @@ from flax import nnx
 
 def apply_rope(x):
     _B, T, _H, D = x.shape
-
     positions = jnp.arange(T)
     frequencies = 1.0 / (10000 ** (jnp.arange(0, D, 2) / D))
-
     angles = positions[:, None] * frequencies[None, :]
-
     cos = jnp.cos(angles)[None, :, None, :]
     sin = jnp.sin(angles)[None, :, None, :]
 
     x_even = x[..., 0::2]
     x_odd = x[..., 1::2]
-
     rotated_even = x_even * cos - x_odd * sin
     rotated_odd = x_even * sin + x_odd * cos
 
@@ -30,6 +26,7 @@ class Encoder(nnx.Module):
         )
         self.conv2 = nnx.Conv(16, 32, kernel_size=(3, 3), padding="VALID", rngs=rngs)
         self.project = nnx.Conv(32, 8, kernel_size=(1, 1), rngs=rngs)
+
         self.linear = nnx.Linear(8 * 6 * 6, latent_dim, rngs=rngs)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
 
@@ -37,9 +34,9 @@ class Encoder(nnx.Module):
         x = jax.nn.elu(self.conv1(obs))
         x = jax.nn.elu(self.conv2(x))
         x = self.project(x)
+
         x = x.reshape(*x.shape[:-3], -1)
         x = self.linear(x)
-
         return self.norm(x)
 
 
@@ -255,8 +252,10 @@ class DynamicsModel(nnx.Module):
 
     def outcome_features(self, history_latents, history_actions):
         history = self.latent_emb(history_latents) + self.action_emb(history_actions)
+
         batch, _, width = history.shape
         agent_token = jnp.broadcast_to(self.agent_token[...], (batch, 1, width))
+
         x = jnp.concatenate([history, agent_token], axis=1)
 
         for block in self.blocks:
@@ -385,8 +384,10 @@ class Critic(nnx.Module):
     def value(logits):
         if logits.shape[-1] == 1:
             return logits  # Legacy scalar checkpoint.
+
         probs = jax.nn.softmax(logits.astype(jnp.float32))
         mid = VALUE_BINS // 2
+
         # Pair opposite bins before summation to avoid cancellation at initialization.
         delta = probs[..., mid + 1 :] - probs[..., :mid][..., ::-1]
         return (delta * return_bins()[mid + 1 :]).sum(axis=-1, keepdims=True)
@@ -399,11 +400,13 @@ class Critic(nnx.Module):
         targets = jax.lax.stop_gradient(targets)
         if logits.shape[-1] == 1:
             return jnp.square(logits[..., 0] - targets)
+
         bins = return_bins()
         targets = jnp.clip(targets, bins[0], bins[-1])
         hi = jnp.clip(jnp.searchsorted(bins, targets), 1, VALUE_BINS - 1)
         lo = hi - 1
         upper_weight = (targets - bins[lo]) / (bins[hi] - bins[lo])
+
         logp = jax.nn.log_softmax(logits.astype(jnp.float32))
         lower = jnp.take_along_axis(logp, lo[..., None], axis=-1)[..., 0]
         upper = jnp.take_along_axis(logp, hi[..., None], axis=-1)[..., 0]

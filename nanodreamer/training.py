@@ -94,6 +94,7 @@ def train_tokenizer(
                 val_loss += float(validation_step(model, batch)) * len(batch)
             val_loss /= len(validation_observations)
             metrics += f"  val BCE {val_loss:.5f}"
+
             if output is not None and val_loss < best:
                 save_weights(model, output)
                 best = val_loss
@@ -110,12 +111,14 @@ def train_outcomes(args, model, transform, replay, val, train_key):
                 raise ValueError(
                     f"Expected integer MinAtar rewards from 0 to {REWARD_CLASSES - 1}"
                 )
+
     if dynamics.reward_target != "categorical_points":
         dynamics.reward_head = make_reward_head(
             dynamics.reward_head.kernel.shape[0], nnx.Rngs(args.seed)
         )
         dynamics.reward_target = "categorical_points"
         print("Initialized categorical points head for outcome training", flush=True)
+
     joint = args.train == "dynamics-outcomes"
     param_filter = is_head_param if args.train == "heads" else is_outcome_param
     optimizer = nnx.Optimizer(
@@ -125,6 +128,7 @@ def train_outcomes(args, model, transform, replay, val, train_key):
     sampler = (
         RewardSampler(replay.episodes, args.context) if args.reward_fraction else None
     )
+
     best = float("inf")
     stale = 0
     for epoch in range(args.epochs):
@@ -135,6 +139,7 @@ def train_outcomes(args, model, transform, replay, val, train_key):
                 (batch["rewards"][:, -horizon:], batch["terminals"][:, -horizon:]),
                 axis=-1,
             )
+
             if joint:
                 train_key, key = jax.random.split(train_key)
                 loss = dynamics_outcome_update(
@@ -161,6 +166,7 @@ def train_outcomes(args, model, transform, replay, val, train_key):
                     param_filter=param_filter,
                 )
             train_losses.append(loss)
+
         losses, counts, n, mse = outcome_validation(
             dynamics,
             val.episodes,
@@ -184,6 +190,7 @@ def train_outcomes(args, model, transform, replay, val, train_key):
                 f"  positives {positives}  predicted {predicted}",
                 flush=True,
             )
+
         if total < best:
             save_weights(model, args.output)
             print(
@@ -212,22 +219,26 @@ def train_dynamics(args, model, env, params, transform):
         )
         restore_weights(agent, args.policy_checkpoint)
         policy = (agent.actor, model.tokenizer.layers[0])
+
     episodes, _ = collect_episodes(env, params, data_key, args.episodes, policy=policy)
     window = args.context + (
         0 if args.train in ("heads", "outcomes") else args.training_horizon - 1
     )
     if args.train == "rollout-error":
         window = args.context + args.imagination_horizon - 1
+
     eligible = [ep for ep in episodes if len(ep["actions"]) >= window]
     train_eps, val_eps = episode_partitions(eligible, args.seed)
     replay = make_replay(train_eps, window, args.seed)
     val = make_replay(val_eps, window, args.seed + 1)
+
     if args.train == "rollout-error":
         from .rollout_error import fit_probe
 
         for buffer in (replay, val):
             cache_latents(model.tokenizer.layers[0], buffer)
         return fit_probe(args, model.dynamics, transform, replay, val, train_key)
+
     outcome_mode = args.train in ("outcomes", "heads", "dynamics-outcomes")
     if freeze_tokenizer or outcome_mode:
         cache_latents(model.tokenizer.layers[0], replay)
@@ -239,6 +250,7 @@ def train_dynamics(args, model, env, params, transform):
         )
         cache_latents(model.tokenizer.layers[0], val)
         return train_outcomes(args, model, transform, replay, val, train_key)
+
     optimizer = nnx.Optimizer(
         model.dynamics if freeze_tokenizer else model, transform, wrt=nnx.Param
     )
@@ -275,6 +287,7 @@ def train_dynamics(args, model, env, params, transform):
                         args.denoising_steps,
                     )
                 )
+
         # Repeat the same held-out windows and noise draws for comparable epochs.
         val.rng = np.random.default_rng(args.seed + 1)
         val_metrics = []
@@ -291,6 +304,7 @@ def train_dynamics(args, model, env, params, transform):
                     horizon=args.training_horizon,
                 )
             )
+
         avg = np.mean(train_metrics, axis=0)
         if freeze_tokenizer:
             train_summary = f"train weighted dynamics {avg:.6f}"
@@ -305,6 +319,7 @@ def train_dynamics(args, model, env, params, transform):
             f" rollout BCE {next_bce:.5f}",
             flush=True,
         )
+
         if next_bce < best:
             best = next_bce
             stale = 0
@@ -331,17 +346,20 @@ def train_actor_critic(args, model, env, params, transform):
     replay = make_replay(episodes, args.context, args.seed)
     encoder = model.tokenizer.layers[0]
     cache_latents(encoder, replay)
+
     input_dim = 2 * replay.episodes[0]["observations"].shape[-1]
     rngs = nnx.Rngs(init_key)
     agent = nnx.Dict(
         actor=Actor(rngs, env.action_space(params).n, input_dim),
         critic=Critic(rngs, input_dim),
     )
+
     head = None
     if args.error_checkpoint:
         from .rollout_error import load_probe
 
         head = load_probe(args, model.dynamics)
+
     ppo = args.policy_method == "ppo"
     if ppo:
         actor_tx = (
@@ -357,6 +375,7 @@ def train_actor_critic(args, model, env, params, transform):
     else:
         optimizers = (nnx.Optimizer(agent, transform, wrt=nnx.Param),)
         update = actor_critic_update
+
     best = -np.inf
     stale = 0
     for epoch in range(args.epochs):
@@ -389,6 +408,7 @@ def train_actor_critic(args, model, env, params, transform):
                         args.error_low,
                     )
                 )
+
         returns = policy_returns(
             agent.actor, encoder, env, params, eval_key, args.eval_episodes
         )
@@ -401,6 +421,7 @@ def train_actor_critic(args, model, env, params, transform):
             f"  critic CE {critic_loss:.5f}  real mean return {score:.4f}",
             flush=True,
         )
+
         if score > best:
             save_weights(agent, args.output)
             best, stale = score, 0
@@ -420,6 +441,7 @@ def train_real_policy(args, model, env, params):
     encoder = model.tokenizer.layers[0]
     z = encode_frames(encoder, obs)
     carry = (key, env_states, z, z)
+
     rngs = nnx.Rngs(init_key)
     agent = nnx.Dict(
         actor=Actor(rngs, env.action_space(params).n, z.shape[-1] * 2),
@@ -436,6 +458,7 @@ def train_real_policy(args, model, env, params):
 
     actor_opt = make_optimizer(agent.actor, args.actor_learning_rate)
     critic_opt = make_optimizer(agent.critic, args.learning_rate)
+
     interval = batch * args.real_horizon * args.steps_per_epoch
     actions = updates = 0
     best = -np.inf
@@ -454,6 +477,7 @@ def train_real_policy(args, model, env, params):
                 *frequency_names,
             ]
         )
+
         for epoch in range(args.epochs + 1):
             metrics = []
             target = epoch * interval
@@ -492,6 +516,7 @@ def train_real_policy(args, model, env, params):
                 actions += count
                 updates += 4 if method == "ppo" else 1
                 metrics.append(m)
+
             score = float(
                 policy_returns(
                     agent.actor, encoder, env, params, eval_key, args.eval_episodes
@@ -506,6 +531,7 @@ def train_real_policy(args, model, env, params):
                 raise FloatingPointError(f"Nonfinite metrics at {actions} actions")
             writer.writerow([actions, updates, score, *summary])
             f.flush()
+
             if score > best:
                 best = score
                 save_weights(agent, args.output)
@@ -513,6 +539,7 @@ def train_real_policy(args, model, env, params):
                 f"Actions {actions} updates {updates} validation {score:.4f} best {best:.4f}",
                 flush=True,
             )
+
     restore_weights(agent, args.output / "best.msgpack")
     with (args.output / "heldout.csv").open("w") as f:
         writer = csv.writer(f)
@@ -530,10 +557,12 @@ def run_training(architecture, args):
     tokenizer_only = args.train == "tokenizer"
     env, params = make_env(args.game)
     channels = env.observation_space(params).shape[-1]
+
     latent_dim = architecture.latent_dim
     if args.tokenizer_checkpoint:
         saved = serialization.msgpack_restore(args.tokenizer_checkpoint.read_bytes())
         latent_dim = saved["layers"]["0"]["linear"]["bias"].shape[0]
+
     if tokenizer_only and args.model_checkpoint is None:
         tokenizer = make_tokenizer(nnx.Rngs(args.seed), channels, latent_dim)
     else:
@@ -555,12 +584,14 @@ def run_training(architecture, args):
             )
         model.dynamics.detach_rollout = args.detach_rollout
         tokenizer = model.tokenizer
+
     if args.tokenizer_checkpoint:
         restore_weights(tokenizer, args.tokenizer_checkpoint)
     if args.train == "online" and model.dynamics.reward_target != "categorical_points":
         raise ValueError(
             "Online training needs a categorical points reward head. Fit it first with --train dynamics-outcomes."
         )
+
     args.output.mkdir(parents=True, exist_ok=False)
     metadata = {"model": {"latent_dim": latent_dim}, "training": asdict(args)}
     (args.output / "config.json").write_text(
@@ -569,12 +600,14 @@ def run_training(architecture, args):
     if args.train in ("online", "actor-critic", "real-actor-critic"):
         (args.output / "tokenizer").mkdir()
         save_weights(tokenizer, args.output / "tokenizer")
+
     optimizer = args.optimizer or ("adam" if tokenizer_only else "adamw")
     transform = (
         optax.adamw(args.learning_rate, weight_decay=args.weight_decay)
         if optimizer == "adamw"
         else optax.adam(args.learning_rate)
     )
+
     if tokenizer_only:
         episodes, _ = collect_episodes(
             env, params, jax.random.PRNGKey(args.seed), args.episodes
@@ -611,11 +644,13 @@ def train_online(args, model, env, params, transform):
     obs, state = env.reset(reset_key, params)
     latent = encode_frames(encoder, obs[None])[0]
     carry = (collect_key, state, latent, latent)
+
     rngs = nnx.Rngs(args.seed)
     agent = nnx.Dict(
         actor=Actor(rngs, env.action_space(params).n, 2 * latent.size),
         critic=Critic(rngs, 2 * latent.size),
     )
+
     actor_tx = (
         optax.adam(args.actor_learning_rate)
         if args.optimizer == "adam"
@@ -624,6 +659,7 @@ def train_online(args, model, env, params, transform):
     actor_opt = nnx.Optimizer(agent.actor, actor_tx, wrt=nnx.Param)
     critic_opt = nnx.Optimizer(agent.critic, transform, wrt=nnx.Param)
     world_opt = nnx.Optimizer(model.dynamics, transform, wrt=nnx.Param)
+
     length = args.context + args.training_horizon - 1
     episodes, _ = collect_episodes(env, params, data_key, args.episodes)
     offline = make_replay(episodes, length, args.seed)
@@ -633,6 +669,7 @@ def train_online(args, model, env, params, transform):
     )
     online = ReplayBuffer(rng=np.random.default_rng(args.seed + 1))
     pending = []
+
     best = -np.inf
     (args.output / "world").mkdir()
 
@@ -664,10 +701,13 @@ def train_online(args, model, env, params, transform):
                 if len(pending) >= length:
                     online.add_episode(pack(pending))
                 pending.clear()
+
         # Make the current partial episode available until the next collection block.
         partial = len(pending) >= length
         if partial:
             online.episodes.append(pack(pending))
+
+        # The reward head can oversample scoring transitions from either replay source.
         online_sampler = (
             RewardSampler(online.episodes, args.context)
             if offline_sampler and online.episodes
@@ -687,6 +727,7 @@ def train_online(args, model, env, params, transform):
                     reward_batch = tuple(
                         np.concatenate(pair) for pair in zip(reward_batch, extra)
                     )
+
             batch = sample()
             train_key, key = jax.random.split(train_key)
             targets = np.stack((batch["rewards"], batch["terminals"]), axis=-1)[
@@ -704,6 +745,8 @@ def train_online(args, model, env, params, transform):
                 args.denoising_steps,
                 reward_batch,
             )
+
+        # PPO starts from replay contexts and follows the updated world model.
         for _ in range(args.steps_per_epoch):
             batch = sample()
             train_key, key = jax.random.split(train_key)
@@ -721,8 +764,10 @@ def train_online(args, model, env, params, transform):
                 args.lambda_return,
                 args.entropy_scale,
             )
+
         if partial:
             online.episodes.pop()
+
         score = float(
             policy_returns(
                 agent.actor, encoder, env, params, eval_key, args.eval_episodes
@@ -730,6 +775,7 @@ def train_online(args, model, env, params, transform):
         )
         if not np.isfinite([loss, *policy_losses, score]).all():
             raise FloatingPointError(f"Nonfinite online metrics at cycle {cycle}")
+
         if score > best:
             save_weights(model, args.output / "world")
             save_weights(agent, args.output)

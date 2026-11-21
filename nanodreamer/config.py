@@ -21,10 +21,12 @@ class TrainConfig:
     seed: int = 0
     episodes: int = 1000
     batch_size: int = 64
+
     learning_rate: float = 3e-4
     optimizer: str | None = None
     weight_decay: float = 1e-4
     epochs: int = 50
+
     training_horizon: int = 3
     context: int = 5
     steps_per_epoch: int = 2000
@@ -32,6 +34,7 @@ class TrainConfig:
     patience: int = 5
     dynamics_weight: float = 1.0
     denoising_steps: int = 4
+
     imagination_horizon: int = 5
     discount: float = 0.99
     lambda_return: float = 0.95
@@ -40,6 +43,7 @@ class TrainConfig:
     real_horizon: int = 5
     policy_method: str | None = None
     actor_learning_rate: float | None = None
+
     tokenizer_checkpoint: Path | None = None
     model_checkpoint: Path | None = None
     policy_checkpoint: Path | None = None
@@ -48,6 +52,7 @@ class TrainConfig:
     reward_fraction: float | None = None
     error_low: float | None = None
     detach_rollout: bool = False
+
     world_updates: int = 1
     collect_steps: int = 64
 
@@ -94,6 +99,7 @@ def parse_args(argv=None):
         default=TrainConfig.world_updates,
         help="World-model updates per online cycle",
     )
+
     init = parser.add_mutually_exclusive_group()
     init.add_argument("--tokenizer-checkpoint", type=Path)
     init.add_argument(
@@ -135,6 +141,7 @@ def parse_args(argv=None):
         type=int,
         help="Defaults to 20 for tokenizer or 50 validation intervals for dynamics",
     )
+
     dyn = parser.add_argument_group("dynamics and joint training")
     dyn.add_argument(
         "--training-horizon",
@@ -165,6 +172,7 @@ def parse_args(argv=None):
         choices=(1, 2, 4, 8, 16),
         default=TrainConfig.denoising_steps,
     )
+
     policy = parser.add_argument_group("actor-critic")
     policy.add_argument(
         "--imagination-horizon", type=int, default=TrainConfig.imagination_horizon
@@ -221,6 +229,7 @@ def parse_args(argv=None):
         type=float,
         help="Predicted error with 90% trust for soft weighting",
     )
+
     args = parser.parse_args(argv)
     if args.error_low is not None and not (
         args.error_checkpoint
@@ -246,9 +255,11 @@ def parse_args(argv=None):
         parser.error(
             "adaptive imagination requires actor-critic, an error checkpoint and a finite nonnegative threshold"
         )
+
     real_game = args.train == "real-actor-critic"
     if args.batch_size is None:
         args.batch_size = 32 if real_game else TrainConfig.batch_size
+
     if args.reward_fraction is not None and not (
         args.train in ("online", "dynamics-outcomes")
         and args.training_horizon == 1
@@ -258,6 +269,7 @@ def parse_args(argv=None):
         parser.error(
             "reward stratification requires one-step online or dynamics-outcomes training and at least two examples per replay source"
         )
+
     if args.actor_learning_rate is not None and (
         not np.isfinite(args.actor_learning_rate) or args.actor_learning_rate <= 0
     ):
@@ -279,6 +291,7 @@ def parse_args(argv=None):
         parser.error(
             "use --train real-actor-critic, or --train actor-critic --policy-method ppo for imagination"
         )
+
     if args.train in ("online", "actor-critic", "real-actor-critic"):
         if args.train == "actor-critic" and not args.model_checkpoint:
             parser.error(
@@ -304,6 +317,7 @@ def parse_args(argv=None):
             parser.error(
                 "discount and lambda-return must be in [0,1] and entropy-scale finite and nonnegative"
             )
+
     tokenizer_only = args.train == "tokenizer"
     if args.episodes is None:
         args.episodes = 10000 if tokenizer_only else 1000
@@ -311,6 +325,7 @@ def parse_args(argv=None):
         args.epochs = (
             TrainConfig.tokenizer_epochs if tokenizer_only else TrainConfig.epochs
         )
+
     if args.train == "dynamics" and not (
         args.tokenizer_checkpoint or args.model_checkpoint
     ):
@@ -327,6 +342,7 @@ def parse_args(argv=None):
         parser.error(
             "outcome training requires --model-checkpoint with pretrained dynamics"
         )
+
     if (
         args.episodes < 2
         or min(

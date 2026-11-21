@@ -135,11 +135,13 @@ def rollout_steps(dynamics, latents, actions, key, horizon, denoising_steps):
         raise ValueError(
             "A rollout needs context + horizon frames and one fewer action"
         )
+
     history = latents[:, :context]
     for step in range(horizon):
         window = actions[:, step : step + context]
         target = latents[:, context + step]
         yield history, window, target
+
         if step + 1 < horizon:
             noise = jax.random.normal(jax.random.fold_in(key, step), target.shape)
             prediction = denoise_next(dynamics, history, window, noise, denoising_steps)
@@ -163,6 +165,7 @@ def rollout_loss(
         shortcut += dynamics_loss(
             history, window, noisy, t, d, predicted, target, dynamics, D_MIN
         )
+
         if outcomes is not None:
             labels = outcomes[:, step] if outcomes.ndim == 3 else outcomes
             event += outcome_metrics(dynamics, history, window, labels)[0]
@@ -187,6 +190,7 @@ def joint_loss(
     encoder, decoder = model.tokenizer.layers
     latents = encoder(obs.astype(jnp.float32))
     reconstruction = reconstruction_loss(decoder(latents), obs)
+
     prediction = shortcut_loss(
         model.dynamics, latents, actions, key, horizon, denoising_steps
     )
@@ -248,6 +252,7 @@ def evaluate(
     )
     encoder, decoder = model.tokenizer.layers
     context = actions.shape[1] - horizon + 1
+
     history = encoder(obs[:, :context].astype(jnp.float32))
     bce = 0.0
     for step in range(horizon):
@@ -274,11 +279,13 @@ def is_outcome_param(path, variable):
 def outcome_metrics(dynamics, history, actions, targets):
     reward, terminal = dynamics.outcome_outputs(history, actions)
     points = targets[:, 0]
+
     reward_ce = optax.softmax_cross_entropy_with_integer_labels(
         reward, points.astype(jnp.int32)
     )
     terminal_bce = optax.sigmoid_binary_cross_entropy(terminal, targets[:, 1])
     losses = jnp.stack((reward_ce.mean(), terminal_bce.mean()))
+
     predictions = jnp.stack(
         (dynamics.scoring_logit(reward) >= 0, terminal >= 0), axis=-1
     )
@@ -290,6 +297,7 @@ def outcome_metrics(dynamics, history, actions, targets):
             events.sum(axis=0),
         )
     )
+
     reward_mse = jnp.mean(jnp.square(dynamics.expected_reward(reward) - points))
     return losses.sum(), (losses, counts, reward_mse)
 
@@ -333,6 +341,7 @@ def dynamics_outcome_update(
             history, reward_actions, points, weights = reward_batch
             reward, _ = net.outcome_outputs(history, reward_actions)
             _, terminal = net.outcome_outputs(latents[:, :-1], actions)
+
             reward_ce = optax.softmax_cross_entropy_with_integer_labels(
                 reward, points.astype(jnp.int32)
             )
@@ -341,8 +350,10 @@ def dynamics_outcome_update(
             ).mean() + optax.sigmoid_binary_cross_entropy(
                 terminal, targets[:, 0, 1]
             ).mean()
+
             latent_loss = shortcut_loss(net, latents, actions, key)
             return event_loss + weight * latent_loss, event_loss
+
         shortcut, event_loss = rollout_loss(
             net, latents, actions, key, horizon, denoising_steps, targets
         )
@@ -378,12 +389,14 @@ def outcome_validation(
     losses = np.zeros(2)
     squared_error = 0.0
     counts = np.zeros((3, 2), dtype=np.int64)
+
     length = context + horizon - 1
     windows = [
         (ep, start)
         for ep in episodes
         for start in range(len(ep["actions"]) - length + 1)
     ]
+
     for offset in range(0, len(windows), batch_size):
         group = windows[offset : offset + batch_size]
         latents = np.stack([ep["observations"][s : s + length + 1] for ep, s in group])
@@ -400,6 +413,7 @@ def outcome_validation(
                 for ep, s in group
             ]
         ).astype(np.float32)
+
         batch_losses, batch_counts, mse = evaluate_rollout_outcomes(
             dynamics,
             latents,
@@ -409,6 +423,7 @@ def outcome_validation(
             horizon,
             denoising_steps,
         )
+
         losses += np.asarray(batch_losses) * len(group)
         squared_error += float(mse) * len(group)
         counts += np.asarray(batch_counts)

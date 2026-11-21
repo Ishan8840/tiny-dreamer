@@ -26,15 +26,18 @@ def main():
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=41001)
+
     args = parser.parse_args()
     if min(args.episodes, args.batch_size) < 1:
         parser.error("episodes and batch size must be positive")
+
     config = args.policy.parent / "config.json"
     game = args.game or (
         json.loads(config.read_text())["training"]["game"] if config.is_file() else None
     )
     if not game:
         parser.error("supply --game for a legacy policy")
+
     env, params = make_env(game)
     rngs = nnx.Rngs(0)
     policy = serialization.msgpack_restore(args.policy.read_bytes())
@@ -49,8 +52,10 @@ def main():
         restore_weights(
             model.tokenizer, args.policy.parent / "tokenizer" / "best.msgpack"
         )
+
     agent = nnx.Dict(actor=Actor(rngs, actions, width), critic=Critic(rngs, width))
     restore_weights(agent, args.policy)
+
     scores = []
     for offset in range(0, args.episodes, args.batch_size):
         key = jax.random.key(args.seed + offset // args.batch_size)
@@ -66,6 +71,7 @@ def main():
                 )
             )
         )
+
     print(f"{game}  episodes {len(scores)}  mean return {np.mean(scores):.4f}")
 
 

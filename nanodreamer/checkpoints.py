@@ -11,6 +11,7 @@ def save_weights(model, directory):
     weights = nnx.to_pure_dict(nnx.state(model, nnx.Param))
     if isinstance(model, WorldModel):
         weights["_reward_target"] = model.dynamics.reward_target
+
     temporary = directory / "best.msgpack.tmp"
     temporary.write_bytes(serialization.to_bytes(weights))
     temporary.replace(directory / "best.msgpack")
@@ -20,6 +21,7 @@ def restore_weights(model, path, *, require_outcomes=False):
     saved = serialization.msgpack_restore(path.read_bytes())
     state = nnx.state(model, nnx.Param)
     template = nnx.to_pure_dict(state)
+
     replacement_head = None
     reward_head = None
     if isinstance(model, WorldModel):
@@ -32,6 +34,7 @@ def restore_weights(model, path, *, require_outcomes=False):
             ("event", "points") if legacy else ("categorical_points",)
         ):
             raise ValueError(f"Incompatible reward target {reward_target} in {path}")
+
         width = 1 if legacy else REWARD_CLASSES
         if model.dynamics.reward_head.bias.shape != (width,):
             reward_head = nnx.Linear(
@@ -40,6 +43,7 @@ def restore_weights(model, path, *, require_outcomes=False):
             template["dynamics"]["reward_head"] = nnx.to_pure_dict(
                 nnx.state(reward_head, nnx.Param)
             )
+
     # Actor-critic checkpoints predating the two-hot head store one output.
     if isinstance(model, nnx.Dict) and isinstance(model.get("critic"), Critic):
         kernel = saved.get("critic", {}).get("f3", {}).get("kernel")
@@ -52,11 +56,13 @@ def restore_weights(model, path, *, require_outcomes=False):
             template["critic"]["f3"] = nnx.to_pure_dict(
                 nnx.state(replacement_head, nnx.Param)
             )
+
     expected = serialization.to_state_dict(template)
     if isinstance(model, WorldModel) and "dynamics" in saved and not require_outcomes:
         # Older world models predate the agent token and outcome heads.
         for name in OUTCOME_COMPONENTS:
             saved["dynamics"].setdefault(name, expected["dynamics"][name])
+
     if jax.tree.structure(saved) != jax.tree.structure(expected):
         raise ValueError(f"Incompatible checkpoint parameter keys: {path}")
     restored = serialization.from_state_dict(template, saved)
@@ -77,5 +83,6 @@ def restore_weights(model, path, *, require_outcomes=False):
             model.dynamics.reward_head = reward_head
             state = nnx.state(model, nnx.Param)
         model.dynamics.reward_target = reward_target
+
     nnx.replace_by_pure_dict(state, jax.tree.map(jnp.asarray, restored))
     nnx.update(model, state)
