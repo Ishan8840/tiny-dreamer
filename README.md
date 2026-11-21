@@ -23,19 +23,19 @@ python -c 'import jax; print(jax.devices())'
 These short Breakout commands exercise the full pipeline. Each stage writes to a fresh directory. Increase the budgets for a trained agent.
 
 ```sh
-python train.py --train tokenizer --output outputs/tokenizer \
+python scripts/train.py --train tokenizer --output outputs/tokenizer \
   --episodes 12 --epochs 1 --batch-size 8
 
-python train.py --train dynamics-outcomes --output outputs/world \
+python scripts/train.py --train dynamics-outcomes --output outputs/world \
   --tokenizer-checkpoint outputs/tokenizer/best.msgpack \
   --episodes 12 --epochs 1 --steps-per-epoch 1 --batch-size 4
 
-python train.py --train online --output outputs/policy \
+python scripts/train.py --train online --output outputs/policy \
   --model-checkpoint outputs/world/best.msgpack --episodes 12 \
   --epochs 1 --collect-steps 32 --world-updates 1 --steps-per-epoch 1 \
   --batch-size 4 --eval-episodes 4
 
-python evaluate.py --policy outputs/policy/best.msgpack --episodes 4
+python scripts/evaluate.py --policy outputs/policy/best.msgpack --episodes 4
 ```
 
 Set the same `--game` on each training command to train Asterix, Breakout, Freeway, Seaquest or SpaceInvaders. Evaluation reads the game from the saved configuration. Keep the policy directory together when moving it, including its tokenizer and configuration.
@@ -71,7 +71,7 @@ For one-step world-model updates, set `--training-horizon 1 --reward-fraction 0.
 | `rollout_error.py` | Error-probe fitting and calibration |
 | `checkpoints.py` | Parameter serialization and compatible weight loading |
 
-Run `python train.py --help` for all flags or `python -m unittest discover -s tests` for the regression tests.
+Run `python scripts/train.py --help` for all flags or `python -m unittest discover -s tests` for the regression tests.
 
 ## License
 
