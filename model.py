@@ -205,7 +205,7 @@ class DynamicsModel(nnx.Module):
             x = block(x)
         return self.out_proj(x[:, -1])
 
-    def outcome_outputs(self, history_latents, history_actions):
+    def outcome_features(self, history_latents, history_actions):
         history = self.latent_emb(history_latents) + self.action_emb(history_actions)
         batch, _, width = history.shape
         agent_token = jnp.broadcast_to(self.agent_token[...], (batch, 1, width))
@@ -214,7 +214,10 @@ class DynamicsModel(nnx.Module):
         for block in self.blocks:
             x = block(x)
 
-        features = x[:, -1]
+        return x[:, -1]
+
+    def outcome_outputs(self, history_latents, history_actions):
+        features = self.outcome_features(history_latents, history_actions)
         return self.reward_head(features), self.terminal_head(features)[:, 0]
 
     def expected_reward(self, output):
@@ -238,14 +241,27 @@ class DynamicsModel(nnx.Module):
         return self.scoring_logit(reward), terminal
 
 
+class RolloutErrorHead(nnx.Module):
+    """Predict next-latent MSE from action-conditioned history and an imagined frame."""
+    def __init__(self, rngs, dynamics):
+        latent, width = dynamics.latent_emb.kernel.shape
+        self.hidden = nnx.Linear(width + latent + 1, 64, rngs=rngs)
+        self.output = nnx.Linear(64, 1, rngs=rngs)
+
+    def __call__(self, features, prediction, depth):
+        depth_column = jnp.full_like(prediction[..., :1], depth)
+        inputs = jnp.concatenate((features, prediction, depth_column), axis=-1)
+        return jax.nn.softplus(self.output(jax.nn.silu(self.hidden(inputs)))[..., 0])
+
+
 def make_tokenizer(rngs, channels, latent_dim=128):
     return nnx.Sequential(Encoder(rngs, channels, latent_dim), Decoder(rngs, channels, latent_dim))
 
 
 class WorldModel(nnx.Module):
-    def __init__(self, rngs, channels, action_dim, qknorm=True, swiglu=False, softcap=0.0):
-        self.tokenizer = make_tokenizer(rngs, channels)
-        self.dynamics = DynamicsModel(rngs, action_dim, latent_dim=128, qknorm=qknorm,
+    def __init__(self, rngs, channels, action_dim, qknorm=True, swiglu=False, softcap=0.0, latent_dim=128):
+        self.tokenizer = make_tokenizer(rngs, channels, latent_dim)
+        self.dynamics = DynamicsModel(rngs, action_dim, latent_dim=latent_dim, qknorm=qknorm,
                                       swiglu=swiglu, softcap=softcap)
 
 

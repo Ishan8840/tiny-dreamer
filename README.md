@@ -43,3 +43,22 @@ The real-game baseline is PPO with actor learning rate 1e-4 and critic learning 
 Use `--policy-method a2c|ppo|reinforce|pmpo` with `--train real-actor-critic` for the real-game ablations. Set `--actor-learning-rate` independently of the critic's `--learning-rate`. The real-action budget remains batch size × real horizon × steps per epoch × epochs. Each run writes validation diagnostics, the highest-validation checkpoint and episode returns on 256 held-out games.
 
 A2C uses one advantage-weighted update per rollout. PPO takes four full-batch passes with clip width 0.2 and fixed behavior logits, advantages and value targets. REINFORCE fits a learned state baseline to discounted Monte Carlo returns from batches of episodes. Padded lanes are masked, and the last batch of each validation interval ends exactly at the action budget. PMPO uses the sign of the λ-return advantage, with equal weight on the positive and negative groups, zero advantage in the positive group, and zero contribution from an empty group. Its actor objective has no KL or entropy term.
+
+### Error-aware imagination
+
+Fit the rollout-error head against a frozen world checkpoint. Supply the corresponding actor–critic checkpoint to collect real episodes from that policy. Omitting the policy checkpoint uses random gameplay.
+
+```bash
+python train.py --train rollout-error --game Asterix --model-checkpoint "$WORLD" \
+  --policy-checkpoint "$POLICY" --imagination-horizon 5 --output runs/asterix-error
+```
+
+The probe predicts mean squared error per latent coordinate at each imagined step. Its validation CSV groups predictions into four risk quartiles **within each depth** and reports actual latent error, missed rewards and invented rewards. Use the held-out diagnostics to select a threshold in latent-MSE units. Assign that value to `CUTOFF` before running the following command.
+
+```bash
+python train.py --train actor-critic --policy-method ppo --game Asterix --model-checkpoint "$WORLD" \
+  --error-checkpoint runs/asterix-error/best.msgpack --error-threshold "$CUTOFF" \
+  --imagination-horizon 5 --output runs/asterix-adaptive
+```
+
+The first rejected transition contributes zero policy and value loss. Earlier transitions bootstrap from the critic at the last trusted state. A fully rejected batch skips the optimizer update. The gate applies during imagined training. Real-game action selection uses the actor as usual.

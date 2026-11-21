@@ -2,6 +2,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import jax.numpy as jnp
 import numpy as np
 
 
@@ -71,7 +72,7 @@ def collect_block(env, params, keys, states, scan_steps):
     return jax.lax.scan(step, (keys, states), xs=None, length=scan_steps)
 
 
-def collect_episodes(env, params, key, num_episodes, scan_steps=8):
+def collect_episodes(env, params, key, num_episodes, scan_steps=8, *, policy=None):
     if num_episodes < 1:
         raise ValueError("num_episodes must be positive")
     if scan_steps < 1:
@@ -81,12 +82,36 @@ def collect_episodes(env, params, key, num_episodes, scan_steps=8):
     obs, states = jax.vmap(env.reset, in_axes=(0, None))(reset_keys, params)
     keys = jax.random.split(rollout_key, num_episodes)
 
+    block = collect_block
+    if policy is not None:
+        actor, encoder = policy
+        initial = encoder(obs.astype(jnp.float32))
+        states = (states, initial, initial)
+
+        @partial(jax.jit, static_argnums=(0, 4))
+        def block(env, params, keys, states, steps):
+            def advance(carry, _):
+                keys, (states, previous, current) = carry
+                keys, act, move = jnp.moveaxis(jax.vmap(lambda k: jax.random.split(k, 3))(keys), 1, 0)
+                logits = actor(jnp.concatenate((previous, current), axis=-1))
+                actions = jax.vmap(jax.random.categorical)(act, logits)
+                obs, following, rewards, done, _ = jax.vmap(env.step_env, in_axes=(0, 0, 0, None))(
+                    move, states, actions, params)
+                terminal = jax.vmap(env.is_terminated, in_axes=(0, None))(following, params)
+                done |= jax.vmap(env.is_truncated, in_axes=(0, None))(following, params)
+                def keep_valid(old, new):
+                    return jnp.where(done.reshape((len(done),) + (1,) * (old.ndim - 1)), old, new)
+                following = jax.tree.map(keep_valid, states, following)
+                latents = encoder(obs.astype(jnp.float32))
+                return (keys, (following, current, latents)), (obs, actions, rewards, done, terminal)
+            return jax.lax.scan(advance, (keys, states), None, length=steps)
+
     observations = [np.asarray(obs)[None, ...]]
     actions, rewards, dones, terminals = [], [], [], []
     lengths = np.zeros(num_episodes, dtype=int)
     active = np.ones(num_episodes, dtype=bool)
     while active.any():
-        (keys, states), transitions = collect_block(env, params, keys, states, scan_steps)
+        (keys, states), transitions = block(env, params, keys, states, scan_steps)
         obs, action, reward, done, terminal = jax.device_get(transitions)
         observations.append(obs)
         actions.append(action)

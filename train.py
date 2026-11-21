@@ -442,11 +442,25 @@ def train_dynamics(args, model, env, params, transform):
     freeze_tokenizer = args.train == "dynamics"
 
     data_key, train_key, val_key = jax.random.split(jax.random.key(args.seed), 3)
-    episodes, _ = collect_episodes(env, params, data_key, args.episodes)
+    policy = None
+    if args.train == "rollout-error" and args.policy_checkpoint:
+        width = model.dynamics.latent_emb.kernel.shape[0] * 2
+        rngs = nnx.Rngs(args.seed)
+        agent = nnx.Dict(actor=Actor(rngs, env.action_space(params).n, width), critic=Critic(rngs, width))
+        restore_weights(agent, args.policy_checkpoint)
+        policy = (agent.actor, model.tokenizer.layers[0])
+    episodes, _ = collect_episodes(env, params, data_key, args.episodes, policy=policy)
     train_eps, val_eps = episode_partitions(episodes, args.seed)
     window = args.context + (0 if args.train in ("heads", "outcomes") else args.training_horizon - 1)
+    if args.train == "rollout-error":
+        window = args.context + args.imagination_horizon - 1
     replay = make_replay(train_eps, window, args.seed)
     val = make_replay(val_eps, window, args.seed + 1)
+    if args.train == "rollout-error":
+        from rollout_error import fit_probe
+        for buffer in (replay, val):
+            cache_latents(model.tokenizer.layers[0], buffer)
+        return fit_probe(args, model.dynamics, transform, replay, val, train_key)
     outcome_mode = args.train in ("outcomes", "heads", "dynamics-outcomes")
     if freeze_tokenizer or outcome_mode:
         cache_latents(model.tokenizer.layers[0], replay)
@@ -517,27 +531,37 @@ def lambda_returns(rewards, discounts, next_values, trace_decay):
     return targets
 
 
-def imagined_batch(agent, dynamics, history, past_actions, keys, denoising_steps, gamma, trace_decay):
-    def imagine(carry, step_key):
+def imagined_batch(agent, dynamics, history, past_actions, keys, denoising_steps, gamma, trace_decay,
+                   error_head=None, error_threshold=None):
+    def imagine(carry, step):
+        step_key, depth = step
         history, past_actions = carry
         action_key, noise_key = jax.random.split(step_key)
         state = policy_state(history)
         action = jax.random.categorical(action_key, agent.actor(state)).astype(past_actions.dtype)
         actions = jnp.concatenate((past_actions, action[:, None]), axis=1)
-        reward, terminal = dynamics.outcome_outputs(history, actions)
+        features = dynamics.outcome_features(history, actions)
+        reward = dynamics.reward_head(features)
+        terminal = dynamics.terminal_head(features)[:, 0]
         noise = jax.random.normal(noise_key, history[:, -1].shape)
         next_z = denoise_next(dynamics, history, actions, noise, denoising_steps)
         next_history = jnp.concatenate((history[:, 1:], next_z[:, None]), axis=1)
         transition = (state, action, dynamics.expected_reward(reward), gamma * jax.nn.sigmoid(-terminal))
-        return (next_history, actions[:, 1:]), transition
+        trusted = (jnp.ones_like(action, dtype=bool) if error_head is None else
+                   error_head(features, next_z, depth) <= error_threshold)
+        return (next_history, actions[:, 1:]), (*transition, trusted)
 
-    (last_history, _), (states, actions, rewards, discounts) = jax.lax.scan(
-        imagine, (history, past_actions), keys)
+    (last_history, _), (states, actions, rewards, discounts, trusted) = jax.lax.scan(
+        imagine, (history, past_actions), (keys, jnp.arange(1, len(keys) + 1)))
     bootstrap_states = jnp.concatenate((states[1:], policy_state(last_history)[None]), axis=0)
     next_values = agent.critic(bootstrap_states)[..., 0]
+    if error_head is not None:
+        # The first rejected transition has return V(current), bootstrapping its predecessor.
+        rewards = jnp.where(trusted, rewards, agent.critic(states)[..., 0])
+        discounts = jnp.where(trusted, discounts, 0.)
     targets = jax.lax.stop_gradient(lambda_returns(rewards, discounts, next_values, trace_decay))
     weights = jnp.cumprod(jnp.concatenate((jnp.ones_like(discounts[:1]), discounts[:-1])), axis=0)
-    return states, actions, targets, weights
+    return states, actions, targets, weights * trusted
 
 
 @nnx.jit(static_argnames=("horizon", "denoising_steps"))
@@ -556,6 +580,24 @@ def imagined_ppo_update(agent, actor_opt, critic_opt, dynamics, history, past_ac
     keys = jax.vmap(lambda i: jax.random.fold_in(key, i))(jnp.arange(horizon))
     batch = imagined_batch(agent, dynamics, history, past_actions, keys, denoising_steps, gamma, trace_decay)
     return learn(agent, actor_opt, critic_opt, *batch, "ppo", entropy_scale)[:2]
+
+
+@nnx.jit(static_argnames=("horizon", "denoising_steps", "ppo"))
+def adaptive_update(agent, optimizers, dynamics, history, past_actions, key, horizon,
+                    denoising_steps, gamma, trace_decay, entropy_scale, head, threshold, ppo):
+    from policy_ablation import learn
+    keys = (jax.vmap(lambda i: jax.random.fold_in(key, i))(jnp.arange(horizon))
+            if ppo else jax.random.split(key, horizon))
+    batch = imagined_batch(agent, dynamics, history, past_actions, keys, denoising_steps,
+                           gamma, trace_decay, head, threshold)
+
+    def update(agent, optimizers):
+        if ppo:
+            return learn(agent, *optimizers, *batch, "ppo", entropy_scale)[:2]
+        return jnp.stack(policy_update(agent, optimizers[0], *batch, entropy_scale))
+
+    # Skip the entire update (including Adam momentum) if every first step was rejected.
+    return nnx.cond(jnp.any(batch[-1] > 0), update, lambda *_: jnp.zeros(2), agent, optimizers)
 
 
 def policy_update(agent, optimizer, states, actions, targets, weights, entropy_scale):
@@ -610,6 +652,10 @@ def train_actor_critic(args, model, env, params, transform):
     rngs = nnx.Rngs(init_key)
     agent = nnx.Dict(actor=Actor(rngs, env.action_space(params).n, input_dim),
                      critic=Critic(rngs, input_dim))
+    head = None
+    if args.error_checkpoint:
+        from rollout_error import load_probe
+        head = load_probe(args, model.dynamics)
     ppo = args.policy_method == "ppo"
     if ppo:
         actor_tx = (optax.adam(args.actor_learning_rate) if args.optimizer == "adam" else
@@ -627,10 +673,13 @@ def train_actor_critic(args, model, env, params, transform):
         for _ in range(args.steps_per_epoch):
             batch = replay.sample_batch(args.batch_size, args.context)
             train_key, key = jax.random.split(train_key)
-            losses.append(update(
-                agent, *optimizers, model.dynamics, batch["observations"][:, :-1],
-                batch["actions"][:, :-1], key, args.imagination_horizon, args.denoising_steps,
-                args.discount, args.lambda_return, args.entropy_scale))
+            rollout = (model.dynamics, batch["observations"][:, :-1], batch["actions"][:, :-1],
+                       key, args.imagination_horizon, args.denoising_steps, args.discount,
+                       args.lambda_return, args.entropy_scale)
+            if head is None:
+                losses.append(update(agent, *optimizers, *rollout))
+            else:
+                losses.append(adaptive_update(agent, optimizers, *rollout, head, args.error_threshold, ppo))
         returns = policy_returns(agent.actor, encoder, env, params, eval_key, args.eval_episodes)
         score = float(returns.mean())
         actor_loss, critic_loss = np.mean(losses, axis=0)
@@ -717,7 +766,7 @@ def train_real_agent(args, model, env, params, transform):
 def main():
     parser = argparse.ArgumentParser(description="Train the tokenizer and QKNorm shortcut dynamics")
     parser.add_argument("--train", choices=("tokenizer", "dynamics", "both", "outcomes", "heads",
-                                            "dynamics-outcomes", "actor-critic", "real-actor-critic"), default="dynamics",
+                                            "dynamics-outcomes", "rollout-error", "actor-critic", "real-actor-critic"), default="dynamics",
                         help="Components to update (default: dynamics with a frozen tokenizer)")
     init = parser.add_mutually_exclusive_group()
     init.add_argument("--tokenizer-checkpoint", type=Path)
@@ -750,7 +799,18 @@ def main():
     policy.add_argument("--policy-method", choices=("a2c", "ppo", "reinforce", "pmpo"),
                         help="Real-game training method (default: ppo)")
     policy.add_argument("--actor-learning-rate", type=float, help="Defaults to 1e-4 for PPO; other methods use --learning-rate")
+    policy.add_argument("--policy-checkpoint", type=Path, help="Collect rollout-error replay with this policy")
+    policy.add_argument("--error-checkpoint", type=Path, help="Fitted rollout-error head for adaptive imagination")
+    policy.add_argument("--error-threshold", type=float, help="Maximum trusted predicted latent MSE")
     args = parser.parse_args()
+    if args.train == "rollout-error" and (not args.model_checkpoint or args.imagination_horizon < 1):
+        parser.error("rollout-error needs a trained world checkpoint and a positive imagination horizon")
+    if args.policy_checkpoint and args.train != "rollout-error":
+        parser.error("--policy-checkpoint is for rollout-error collection")
+    if args.error_checkpoint or args.error_threshold is not None:
+        if (args.train != "actor-critic" or not args.error_checkpoint or args.error_threshold is None
+                or not np.isfinite(args.error_threshold) or args.error_threshold < 0):
+            parser.error("adaptive imagination requires actor-critic, an error checkpoint and a finite nonnegative threshold")
     real_game = args.train == "real-actor-critic"
     if args.batch_size is None:
         args.batch_size = 32 if real_game else BATCH_SIZE
@@ -799,9 +859,13 @@ def main():
     if tokenizer_only and args.model_checkpoint is None:
         tokenizer = make_tokenizer(nnx.Rngs(args.seed), channels)
     else:
-        model = WorldModel(nnx.Rngs(args.seed), channels, env.action_space(params).n)
+        latent_dim = 128
         if args.model_checkpoint:
-            restore_weights(model, args.model_checkpoint, require_outcomes=args.train == "actor-critic")
+            saved = serialization.msgpack_restore(args.model_checkpoint.read_bytes())
+            latent_dim = saved["dynamics"]["latent_emb"]["kernel"].shape[0]
+        model = WorldModel(nnx.Rngs(args.seed), channels, env.action_space(params).n, latent_dim=latent_dim)
+        if args.model_checkpoint:
+            restore_weights(model, args.model_checkpoint, require_outcomes=args.train in ("rollout-error", "actor-critic"))
         tokenizer = model.tokenizer
     if args.tokenizer_checkpoint:
         restore_weights(tokenizer, args.tokenizer_checkpoint)
