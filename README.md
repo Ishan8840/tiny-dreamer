@@ -57,6 +57,10 @@ The default tokenizer has 64 latent dimensions. The world model uses five frames
 
 For one-step world-model updates, set `--training-horizon 1 --reward-fraction 0.25` to draw extra scoring transitions for the reward head. Importance weights recover the original replay distribution. For multi-step training, `--detach-rollout` stops gradients through the predicted inputs to later steps. An offline imagined policy can use a fitted error probe with `--error-checkpoint PATH --error-threshold HIGH`; adding `--error-low LOW` gives 90% trust at LOW and 50% at HIGH.
 
+Use `--diffusion-forcing` to independently mix each context latent with Gaussian noise during shortcut training. The transformer receives a signal level for each frame. The shortcut target is still the next latent at each supervised rollout step, and reward and terminal heads use the ordinary rollout context. Prediction starts from clean observed history at evaluation. This option adds no parameters and works with existing checkpoints.
+
+For autoregressive inference with a diffusion-forcing checkpoint, `--inference-history-noise 0.0625` mixes each previously predicted context latent with 1/16 Gaussian noise. The denoiser receives its corresponding signal level. Observed frames stay clean, and each predicted frame uses one context-noise draw across all denoising substeps. The default is zero.
+
 ## Where to make changes
 
 | File in `tiny_dreamer/` | Responsibility |

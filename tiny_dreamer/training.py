@@ -583,6 +583,8 @@ def run_training(architecture, args):
                 in ("rollout-error", "actor-critic", "online"),
             )
         model.dynamics.detach_rollout = args.detach_rollout
+        model.dynamics.diffusion_forcing = args.diffusion_forcing
+        model.dynamics.inference_history_noise = args.inference_history_noise
         tokenizer = model.tokenizer
 
     if args.tokenizer_checkpoint:

@@ -10,11 +10,16 @@ import numpy as np
 from flax import nnx
 
 from .checkpoints import restore_weights, save_weights
-from .model import RolloutErrorHead, denoise_next
+from .model import RolloutErrorHead, predict_next
 
 
 def probe_settings(args):
     return {
+        **(
+            {"inference_history_noise": args.inference_history_noise}
+            if args.inference_history_noise
+            else {}
+        ),
         "game": args.game,
         "context": args.context,
         "horizon": args.imagination_horizon,
@@ -43,8 +48,14 @@ def probe_examples(dynamics, latents, actions, key, context, denoising_steps):
     def advance(history, depth):
         window = jax.lax.dynamic_slice_in_dim(actions, depth, context, axis=1)
         features = dynamics.outcome_features(history, window)
-        noise = jax.random.normal(jax.random.fold_in(key, depth), history[:, -1].shape)
-        prediction = denoise_next(dynamics, history, window, noise, denoising_steps)
+        prediction = predict_next(
+            dynamics,
+            history,
+            window,
+            jax.random.fold_in(key, depth),
+            denoising_steps,
+            depth,
+        )
 
         target = latents[:, context + depth]
         error = jnp.mean(jnp.square(prediction - target), axis=-1)

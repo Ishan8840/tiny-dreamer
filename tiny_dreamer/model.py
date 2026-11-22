@@ -212,6 +212,8 @@ class DynamicsModel(nnx.Module):
         swiglu=False,
         softcap=0.0,
     ):
+        self.diffusion_forcing = False
+        self.inference_history_noise = 0.0
         self.detach_rollout = False
         self.latent_emb = nnx.Linear(latent_dim, d_model, rngs=rngs)
         self.action_emb = nnx.Embed(
@@ -233,11 +235,22 @@ class DynamicsModel(nnx.Module):
         self.terminal_head = nnx.Linear(d_model, 1, rngs=rngs)
 
     def __call__(
-        self, history_latents, history_actions, noisy_latent, noise_level, step_size
+        self,
+        history_latents,
+        history_actions,
+        noisy_latent,
+        noise_level,
+        step_size,
+        history_signal=None,
     ):
         history_tokens = self.latent_emb(history_latents) + self.action_emb(
             history_actions
         )
+
+        if history_signal is not None:
+            # Reuse the target's signal-level embedding, relative to clean history.
+            signal_direction = self.shortcut_emb.kernel[0]
+            history_tokens += (history_signal[..., None] - 1.0) * signal_direction
 
         shortcut = jnp.stack([noise_level, step_size], axis=-1)
         shortcut_token = self.shortcut_emb(shortcut)[:, None, :]
@@ -335,11 +348,32 @@ class WorldModel(nnx.Module):
 OUTCOME_COMPONENTS = ("agent_token", "reward_head", "terminal_head")
 
 
-def denoise_next(dynamics, history, actions, noise, denoising_steps):
+def predict_next(dynamics, history, actions, key, denoising_steps, generated_frames):
+    """Denoise one future latent, optionally perturbing only predicted context."""
+    noise = jax.random.normal(key, history[:, -1].shape)
+    fraction = dynamics.inference_history_noise
+    if fraction == 0:
+        return denoise_next(dynamics, history, actions, noise, denoising_steps)
+
+    # The independent draw is shared by every denoising substep for this frame.
+    context_key = jax.random.fold_in(key, 0xDF)
+    perturbation = jax.random.normal(context_key, history.shape, dtype=history.dtype)
+    generated = jnp.arange(history.shape[1]) >= history.shape[1] - generated_frames
+    mixed = (1 - fraction) * history + fraction * perturbation
+    context = jnp.where(generated[None, :, None], mixed, history)
+    signal = jnp.broadcast_to(1 - fraction * generated, history.shape[:2])
+    return denoise_next(dynamics, context, actions, noise, denoising_steps, signal)
+
+
+def denoise_next(
+    dynamics, history, actions, noise, denoising_steps, history_signal=None
+):
     step_size = jnp.full((len(noise),), 1.0 / denoising_steps, dtype=noise.dtype)
 
     def advance(index, latent):
-        clean = dynamics(history, actions, latent, index * step_size, step_size)
+        clean = dynamics(
+            history, actions, latent, index * step_size, step_size, history_signal
+        )
         return latent + (clean - latent) / (denoising_steps - index)
 
     return jax.lax.fori_loop(0, denoising_steps, advance, noise)

@@ -7,7 +7,7 @@ import optax
 from flax import nnx
 
 from .config import TrainConfig
-from .model import OUTCOME_COMPONENTS, denoise_next
+from .model import OUTCOME_COMPONENTS, denoise_next, predict_next
 
 DEFAULT_DENOISING_STEPS = TrainConfig.denoising_steps
 D_MIN = 1 / 16
@@ -33,6 +33,7 @@ def dynamics_loss(
     target_latent,
     model,
     d_min,
+    history_signal=None,
 ):
     half_step = step_size / 2
 
@@ -43,6 +44,7 @@ def dynamics_loss(
             noisy_latent,
             noise_level,
             half_step,
+            history_signal,
         )
         - noisy_latent
     ) / (1 - noise_level)[:, None]
@@ -57,6 +59,7 @@ def dynamics_loss(
             z_prime,
             t_prime,
             half_step,
+            history_signal,
         )
         - z_prime
     ) / (1 - t_prime)[:, None]
@@ -129,7 +132,9 @@ def train_step(model, optimizer, batch):
     return loss
 
 
-def rollout_steps(dynamics, latents, actions, key, horizon, denoising_steps):
+def rollout_steps(
+    dynamics, latents, actions, key, horizon, denoising_steps, *, inference=False
+):
     context = actions.shape[1] - horizon + 1
     if context < 1 or horizon < 1 or latents.shape[1] != actions.shape[1] + 1:
         raise ValueError(
@@ -143,11 +148,28 @@ def rollout_steps(dynamics, latents, actions, key, horizon, denoising_steps):
         yield history, window, target
 
         if step + 1 < horizon:
-            noise = jax.random.normal(jax.random.fold_in(key, step), target.shape)
-            prediction = denoise_next(dynamics, history, window, noise, denoising_steps)
+            step_key = jax.random.fold_in(key, step)
+            if inference:
+                prediction = predict_next(
+                    dynamics, history, window, step_key, denoising_steps, step
+                )
+            else:
+                noise = jax.random.normal(step_key, target.shape)
+                prediction = denoise_next(
+                    dynamics, history, window, noise, denoising_steps
+                )
             if dynamics.detach_rollout:
                 prediction = jax.lax.stop_gradient(prediction)
             history = jnp.concatenate((history[:, 1:], prediction[:, None]), axis=1)
+
+
+def noise_history(history, key):
+    """Draw an independent flow interpolation for every batch item and frame."""
+    level_key, noise_key = jax.random.split(key)
+    signal = jax.random.randint(level_key, history.shape[:-1], 0, 17) / 16.0
+    noise = jax.random.normal(noise_key, history.shape, dtype=history.dtype)
+    mixed = signal[..., None] * history + (1.0 - signal[..., None]) * noise
+    return mixed, signal
 
 
 def rollout_loss(
@@ -161,9 +183,25 @@ def rollout_loss(
         target = jax.lax.stop_gradient(target)
         noise_key = key if horizon == 1 else jax.random.fold_in(loss_key, step)
         noisy, t, d = sample_training_inputs(target, noise_key)
-        predicted = dynamics(history, window, noisy, t, d)
+        denoising_history = history
+        history_signal = None
+        if dynamics.diffusion_forcing:
+            # Keep the baseline target draws and autoregressive rollout identical.
+            history_key = jax.random.fold_in(jax.random.fold_in(key, 0xDF), step)
+            denoising_history, history_signal = noise_history(history, history_key)
+
+        predicted = dynamics(denoising_history, window, noisy, t, d, history_signal)
         shortcut += dynamics_loss(
-            history, window, noisy, t, d, predicted, target, dynamics, D_MIN
+            denoising_history,
+            window,
+            noisy,
+            t,
+            d,
+            predicted,
+            target,
+            dynamics,
+            D_MIN,
+            history_signal,
         )
 
         if outcomes is not None:
@@ -259,13 +297,13 @@ def evaluate(
         noise_key = (
             rollout_key if horizon == 1 else jax.random.fold_in(rollout_key, step)
         )
-        noise = jax.random.normal(noise_key, history[:, -1].shape)
-        prediction = denoise_next(
+        prediction = predict_next(
             model.dynamics,
             history,
             actions[:, step : step + context],
-            noise,
+            noise_key,
             denoising_steps,
+            step,
         )
         bce += reconstruction_loss(decoder(prediction), obs[:, context + step])
         history = jnp.concatenate((history[:, 1:], prediction[:, None]), axis=1)
@@ -371,7 +409,15 @@ def evaluate_rollout_outcomes(
     metrics = [
         outcome_metrics(dynamics, history, window, targets[:, step])[1]
         for step, (history, window, _) in enumerate(
-            rollout_steps(dynamics, latents, actions, key, horizon, denoising_steps)
+            rollout_steps(
+                dynamics,
+                latents,
+                actions,
+                key,
+                horizon,
+                denoising_steps,
+                inference=True,
+            )
         )
     ]
     losses, counts, mses = zip(*metrics)

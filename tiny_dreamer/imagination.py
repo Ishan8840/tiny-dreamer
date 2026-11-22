@@ -3,7 +3,7 @@
 import jax
 import jax.numpy as jnp
 
-from .model import denoise_next
+from .model import predict_next
 
 
 def policy_state(history):
@@ -37,8 +37,9 @@ def imagine(
         reward = dynamics.reward_head(features)
         terminal = dynamics.terminal_head(features)[:, 0]
 
-        noise = jax.random.normal(noise_key, history[:, -1].shape)
-        next_z = denoise_next(dynamics, history, actions, noise, denoising_steps)
+        next_z = predict_next(
+            dynamics, history, actions, noise_key, denoising_steps, depth - 1
+        )
         next_history = jnp.concatenate((history[:, 1:], next_z[:, None]), axis=1)
         transition = (
             state,

@@ -52,6 +52,8 @@ class TrainConfig:
     reward_fraction: float | None = None
     error_low: float | None = None
     detach_rollout: bool = False
+    diffusion_forcing: bool = False
+    inference_history_noise: float = 0.0
 
     world_updates: int = 1
     collect_steps: int = 64
@@ -230,7 +232,28 @@ def parse_args(argv=None):
         help="Predicted error with 90%% trust for soft weighting",
     )
 
+    dyn.add_argument(
+        "--diffusion-forcing",
+        action="store_true",
+        help="Train the shortcut predictor with independently noised context latents.",
+    )
+
+    dyn.add_argument(
+        "--inference-history-noise",
+        type=float,
+        default=0.0,
+        help="Gaussian mixing fraction for generated history during inference (0 to 1).",
+    )
     args = parser.parse_args(argv)
+    if not 0 <= args.inference_history_noise <= 1:
+        parser.error("--inference-history-noise must be between 0 and 1")
+    if args.diffusion_forcing and args.train not in (
+        "dynamics",
+        "dynamics-outcomes",
+        "both",
+        "online",
+    ):
+        parser.error("--diffusion-forcing applies to training the latent dynamics")
     if args.error_low is not None and not (
         args.error_checkpoint
         and args.error_threshold is not None
